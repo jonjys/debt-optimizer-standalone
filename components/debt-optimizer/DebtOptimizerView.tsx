@@ -3,9 +3,6 @@
 
 import { useState } from "react";
 import { Plus, Trash2, TrendingDown, Calendar, ShieldCheck, Zap } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { calculateDebtStrategy } from "@/lib/debt-optimizer/engine";
 import type { Loan, DebtOptimizerResult } from "@/lib/debt-optimizer/types";
 
@@ -70,9 +67,12 @@ export function DebtOptimizerView() {
             Simulera automatisk lavineffekt (Debt Avalanche) och toppa upp månadsbelopp.
           </p>
         </div>
-        <Button onClick={addLoan} variant="outline" size="sm" className="border-slate-800 bg-slate-900 text-xs">
+        <button
+          onClick={addLoan}
+          className="flex items-center border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-200 px-3 py-1.5 rounded-lg text-xs font-medium transition"
+        >
           <Plus className="w-4 h-4 mr-1" /> Lägg till lån
-        </Button>
+        </button>
       </div>
 
       <div className="space-y-4">
@@ -81,7 +81,7 @@ export function DebtOptimizerView() {
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Lån #{idx + 1}</span>
               {loans.length > 1 && (
-                <button onClick={() => removeLoan(loan.id)} className="text-slate-500 hover:text-rose-400">
+                <button onClick={() => removeLoan(loan.id)} className="text-slate-500 hover:text-rose-400 transition">
                   <Trash2 className="w-4 h-4" />
                 </button>
               )}
@@ -89,40 +89,41 @@ export function DebtOptimizerView() {
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               <div>
-                <Label className="text-[10px] text-slate-400">Lånets namn</Label>
-                <Input
+                <label className="block text-[10px] text-slate-400 mb-1">Lånets namn</label>
+                <input
+                  type="text"
                   value={loan.name}
                   onChange={(e) => updateLoan(loan.id, "name", e.target.value)}
-                  className="bg-slate-950 border-slate-800 text-xs"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                 />
               </div>
               <div>
-                <Label className="text-[10px] text-slate-400">Skuld (kr)</Label>
-                <Input
+                <label className="block text-[10px] text-slate-400 mb-1">Skuld (kr)</label>
+                <input
                   type="number"
                   value={loan.balance}
                   onChange={(e) => updateLoan(loan.id, "balance", Number(e.target.value))}
-                  className="bg-slate-950 border-slate-800 text-xs"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                 />
               </div>
               <div>
-                <Label className="text-[10px] text-slate-400">Ränta (%)</Label>
-                <Input
+                <label className="block text-[10px] text-slate-400 mb-1">Ränta (%)</label>
+                <input
                   type="number"
                   step="0.1"
                   value={loan.interestRate}
                   onChange={(e) => updateLoan(loan.id, "interestRate", Number(e.target.value))}
-                  className="bg-slate-950 border-slate-800 text-xs"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                 />
               </div>
               <div>
-                <Label className="text-[10px] text-slate-400">Toppa upp till (kr/mån)</Label>
-                <Input
+                <label className="block text-[10px] text-slate-400 mb-1">Toppa upp till (kr/mån)</label>
+                <input
                   type="number"
                   value={loan.targetMonthlyPayment || ""}
                   placeholder="t.ex. 2000"
                   onChange={(e) => updateLoan(loan.id, "targetMonthlyPayment", Number(e.target.value))}
-                  className="bg-slate-950 border-slate-800 text-xs text-emerald-400"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-emerald-400 focus:outline-none focus:border-emerald-500"
                 />
               </div>
             </div>
@@ -132,20 +133,23 @@ export function DebtOptimizerView() {
 
       <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800 flex items-center justify-between gap-4">
         <div>
-          <Label className="text-xs text-slate-300">Extra månadsbudget utöver lånen (kr/mån)</Label>
-          <p className="text-[11px] text-slate-500">Läggs automatiskt på lånet med högst ränta</p>
+          <label className="block text-xs text-slate-300 font-medium">Extra månadsbudget utöver lånen (kr/mån)</label>
+          <p className="text-[11px] text-slate-500 mt-0.5">Läggs automatiskt på lånet med högst ränta</p>
         </div>
-        <Input
+        <input
           type="number"
           value={extraBudget}
           onChange={(e) => setExtraBudget(e.target.value)}
-          className="w-32 bg-slate-950 border-slate-800 text-sm font-bold text-indigo-400"
+          className="w-32 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm font-bold text-indigo-400 focus:outline-none focus:border-indigo-500 text-right"
         />
       </div>
 
-      <Button onClick={handleCalculate} className="w-full bg-indigo-600 hover:bg-indigo-500 py-3 rounded-xl font-semibold text-xs">
+      <button
+        onClick={handleCalculate}
+        className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-xl text-xs transition"
+      >
         Räkna ut Optimering & Slutdatum
-      </Button>
+      </button>
 
       {result && (
         <div className="space-y-4 pt-4 border-t border-slate-800 animate-in fade-in-50">
