@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { Plus, Trash2, TrendingDown, Calendar, Zap, Globe } from "lucide-react";
+import { Plus, Trash2, TrendingDown, Calendar, Zap, Globe, Sliders } from "lucide-react";
 import { calculateDebtStrategy } from "@/lib/debt-optimizer/engine";
 import type { Loan } from "@/lib/debt-optimizer/types";
 
@@ -16,6 +16,7 @@ export function DebtOptimizerView() {
       balance: 50000,
       interestRate: 8.5,
       amortizationType: "annuity",
+      targetMonthlyPayment: 2000,
     },
     {
       id: "2",
@@ -23,6 +24,7 @@ export function DebtOptimizerView() {
       balance: 15000,
       interestRate: 19.5,
       amortizationType: "straight",
+      targetMonthlyPayment: 1000,
     },
   ]);
 
@@ -44,6 +46,7 @@ export function DebtOptimizerView() {
       balance: 10000,
       interestRate: 10,
       amortizationType: "annuity",
+      targetMonthlyPayment: 1500,
     };
     setLoans([...loans, newLoan]);
   };
@@ -67,7 +70,7 @@ export function DebtOptimizerView() {
       monthsSaved: "Sparade månader",
       monthsUnit: "månader",
       settings: "Inställningar",
-      extraBudget: "Extra månadsbudget (kr)",
+      extraBudget: "Extra månadsbudget utöver lägsta inbetalning (kr)",
       strategy: "Strategi",
       avalanche: "Lavin (Högst ränta först - Bäst besparing)",
       snowball: "Snöboll (Minst belopp först - Psykologisk vinst)",
@@ -76,12 +79,13 @@ export function DebtOptimizerView() {
       loanName: "Lånenamn",
       balance: "Belopp (kr)",
       rate: "Ränta (%)",
+      targetPayment: "Toppa upp månadsinbetalning (kr)",
       type: "Amorteringstyp",
       annuity: "Annuitet",
       straight: "Rak amortering",
-      milestones: "Avbetalningsplan",
-      paidOff: "Avbetalad",
-      interestPaid: "Total ränta betald",
+      milestones: "Avbetalningsplan / Slutdatum",
+      paidOff: "Färdigbetalt",
+      interestPaid: "Total ränta",
     },
     en: {
       title: "Debt Optimizer",
@@ -91,7 +95,7 @@ export function DebtOptimizerView() {
       monthsSaved: "Months Saved",
       monthsUnit: "months",
       settings: "Settings",
-      extraBudget: "Extra Monthly Budget ($/kr)",
+      extraBudget: "Extra Monthly Budget beyond minimum (kr/$)",
       strategy: "Strategy",
       avalanche: "Avalanche (Highest interest first - Best savings)",
       snowball: "Snowball (Lowest balance first - Quick wins)",
@@ -100,12 +104,13 @@ export function DebtOptimizerView() {
       loanName: "Loan Name",
       balance: "Balance",
       rate: "Interest Rate (%)",
+      targetPayment: "Top-up monthly payment (kr/$)",
       type: "Amortization Type",
       annuity: "Annuity",
       straight: "Straight",
-      milestones: "Payoff Schedule",
+      milestones: "Payoff Schedule / Final Dates",
       paidOff: "Paid off",
-      interestPaid: "Total interest paid",
+      interestPaid: "Total interest",
     },
   }[lang];
 
@@ -139,40 +144,43 @@ export function DebtOptimizerView() {
         </div>
       </div>
 
-      {/* KPI Cards */}
+      {/* Top KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
           <div className="flex items-center gap-3 text-teal-400 mb-2">
             <Calendar className="w-5 h-5" />
             <span className="text-sm font-medium text-slate-400">{t.freedomDate}</span>
           </div>
-          <div className="text-2xl font-bold text-white">{result.freedomDate}</div>
+          <div className="text-3xl font-bold text-white">{result.freedomDate}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
           <div className="flex items-center gap-3 text-emerald-400 mb-2">
             <TrendingDown className="w-5 h-5" />
             <span className="text-sm font-medium text-slate-400">{t.savings}</span>
           </div>
-          <div className="text-2xl font-bold text-emerald-400">
+          <div className="text-3xl font-bold text-emerald-400">
             {result.totalSavings.toLocaleString()} kr
           </div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
           <div className="flex items-center gap-3 text-amber-400 mb-2">
             <Zap className="w-5 h-5" />
             <span className="text-sm font-medium text-slate-400">{t.monthsSaved}</span>
           </div>
-          <div className="text-2xl font-bold text-white">
+          <div className="text-3xl font-bold text-white">
             {result.monthsSaved} {t.monthsUnit}
           </div>
         </div>
       </div>
 
-      {/* Settings */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
-        <h2 className="text-lg font-semibold text-white">{t.settings}</h2>
+      {/* Global Settings */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 shadow-lg">
+        <div className="flex items-center gap-2 text-slate-200">
+          <Sliders className="w-5 h-5 text-teal-400" />
+          <h2 className="text-lg font-semibold">{t.settings}</h2>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm text-slate-400 mb-2">{t.extraBudget}</label>
@@ -198,7 +206,7 @@ export function DebtOptimizerView() {
       </div>
 
       {/* Loans List */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 shadow-lg">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">{t.loansTitle}</h2>
           <button
@@ -210,61 +218,63 @@ export function DebtOptimizerView() {
           </button>
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-4">
           {loans.map((loan) => (
             <div
               key={loan.id}
-              className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center bg-slate-950 p-4 rounded-xl border border-slate-800"
+              className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3"
             >
-              <div className="md:col-span-3">
-                <input
-                  type="text"
-                  value={loan.name}
-                  onChange={(e) => handleUpdateLoan(loan.id, "name", e.target.value)}
-                  className="w-full bg-transparent border-b border-slate-800 focus:border-teal-500 text-white py-1 font-medium text-sm focus:outline-none"
-                  placeholder={t.loanName}
-                />
-              </div>
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+                <div className="md:col-span-3">
+                  <label className="block text-xs text-slate-500 mb-1">{t.loanName}</label>
+                  <input
+                    type="text"
+                    value={loan.name}
+                    onChange={(e) => handleUpdateLoan(loan.id, "name", e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-teal-500"
+                  />
+                </div>
 
-              <div className="md:col-span-3">
-                <input
-                  type="number"
-                  value={loan.balance}
-                  onChange={(e) => handleUpdateLoan(loan.id, "balance", Number(e.target.value))}
-                  className="w-full bg-transparent border-b border-slate-800 focus:border-teal-500 text-slate-300 py-1 text-sm focus:outline-none"
-                  placeholder={t.balance}
-                />
-              </div>
+                <div className="md:col-span-3">
+                  <label className="block text-xs text-slate-500 mb-1">{t.balance}</label>
+                  <input
+                    type="number"
+                    value={loan.balance}
+                    onChange={(e) => handleUpdateLoan(loan.id, "balance", Number(e.target.value))}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-slate-200 text-sm focus:outline-none focus:border-teal-500"
+                  />
+                </div>
 
-              <div className="md:col-span-2">
-                <input
-                  type="number"
-                  step="0.1"
-                  value={loan.interestRate}
-                  onChange={(e) => handleUpdateLoan(loan.id, "interestRate", Number(e.target.value))}
-                  className="w-full bg-transparent border-b border-slate-800 focus:border-teal-500 text-slate-300 py-1 text-sm focus:outline-none"
-                  placeholder={t.rate}
-                />
-              </div>
+                <div className="md:col-span-2">
+                  <label className="block text-xs text-slate-500 mb-1">{t.rate}</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={loan.interestRate}
+                    onChange={(e) => handleUpdateLoan(loan.id, "interestRate", Number(e.target.value))}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-slate-200 text-sm focus:outline-none focus:border-teal-500"
+                  />
+                </div>
 
-              <div className="md:col-span-3">
-                <select
-                  value={loan.amortizationType}
-                  onChange={(e) => handleUpdateLoan(loan.id, "amortizationType", e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none"
-                >
-                  <option value="annuity">{t.annuity}</option>
-                  <option value="straight">{t.straight}</option>
-                </select>
-              </div>
+                <div className="md:col-span-3">
+                  <label className="block text-xs text-teal-400 font-medium mb-1">{t.targetPayment}</label>
+                  <input
+                    type="number"
+                    value={loan.targetMonthlyPayment || ""}
+                    onChange={(e) => handleUpdateLoan(loan.id, "targetMonthlyPayment", Number(e.target.value))}
+                    placeholder="t.ex. 2000"
+                    className="w-full bg-slate-900 border border-teal-500/50 rounded-lg px-3 py-1.5 text-teal-300 text-sm focus:outline-none focus:border-teal-400"
+                  />
+                </div>
 
-              <div className="md:col-span-1 flex justify-end">
-                <button
-                  onClick={() => handleRemoveLoan(loan.id)}
-                  className="text-slate-500 hover:text-rose-400 p-1 transition"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="md:col-span-1 flex justify-end pt-5">
+                  <button
+                    onClick={() => handleRemoveLoan(loan.id)}
+                    className="text-slate-500 hover:text-rose-400 p-1 transition"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -273,18 +283,23 @@ export function DebtOptimizerView() {
 
       {/* Payoff Milestones */}
       {result.milestones.length > 0 && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 shadow-lg">
           <h2 className="text-lg font-semibold text-white">{t.milestones}</h2>
-          <div className="space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {result.milestones.map((m) => (
               <div
                 key={m.loanId}
-                className="flex items-center justify-between p-3 bg-slate-950 rounded-lg border border-slate-800 text-sm"
+                className="p-4 bg-slate-950 rounded-xl border border-slate-800/80 flex items-center justify-between"
               >
-                <span className="font-medium text-slate-200">{m.loanName}</span>
-                <div className="flex items-center gap-4 text-xs text-slate-400">
-                  <span>{t.paidOff}: <strong className="text-teal-400">{m.payoffDate}</strong></span>
-                  <span>{t.interestPaid}: {m.totalInterestPaid.toLocaleString()} kr</span>
+                <div>
+                  <div className="font-semibold text-slate-200">{m.loanName}</div>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    {t.interestPaid}: {m.totalInterestPaid.toLocaleString()} kr
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs text-slate-500 block">{t.paidOff}</span>
+                  <span className="text-base font-bold text-teal-400">{m.payoffDate}</span>
                 </div>
               </div>
             ))}
