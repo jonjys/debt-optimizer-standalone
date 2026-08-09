@@ -1,21 +1,25 @@
-// lib/debt-optimizer/types.ts
 export interface Loan {
   id: string;
   name: string;
   loanType: "Rak amortering" | "Annuitet";
-  balance: number; // Skuld idag
-  interestRate: number; // Ränta i decimal (t.ex. 0.0595 = 5.95%)
-  currentMonthlyPayment: number; // Ord. Betalning/mån
-  targetMonthlyPayment?: number; // Målbelopp (Toppa upp till, t.ex. 2000)
-  extraPaymentFromStart?: number; // Extra amortering från start
-  extraPaymentAfterFreed?: number; // Extra amortering efter föregående lån är klart
+  balance: number;
+  interestRate: number; // decimal, e.g. 0.0595
+  currentMonthlyPayment: number;
+  targetMonthlyPayment?: number;
+  extraPaymentFromStart?: number;
+  extraPaymentAfterFreed?: number;
+}
+
+export interface OneTimePayment {
+  id: string;
+  date: string; // "YYYY-MM" e.g. "2028-04"
+  amount: number;
 }
 
 export interface StrategyInput {
   loans: Loan[];
-  oneTimePaymentAmount: number; // Engångsinbetalning (t.ex. 10 000 kr)
-  oneTimePaymentDate: string; // T.ex. "2028-04"
-  startDate: string; // T.ex. "2026-08"
+  oneTimePayments: OneTimePayment[];
+  startDate: string; // "YYYY-MM"
 }
 
 export interface LoanResult {
