@@ -4,18 +4,20 @@ export type AmortizationType = 'annuity' | 'straight';
 export interface Loan {
   id: string;
   name: string;
-  balance: number; // Kapitalskuld (kr)
+  balance: number; // Kapitalskuld
   interestRate: number; // Årsränta (%)
   amortizationType: AmortizationType;
-  currentMonthlyPayment: number; // Nuvarande ordinarie månadsbetalning (t.ex. 1389 kr)
-  targetMonthlyPayment?: number; // Önskad toppning (t.ex. 2000 kr)
-  monthlyFee?: number; // Ev. aviavgift
+  currentMonthlyPayment: number; // Ordinarie betalning (kr/mån)
+  targetMonthlyPayment?: number; // Önskad toppning (kr/mån)
+  topUpStartMonthOffset?: number; // Månader tills toppning startar (0 = direkt nästa månad)
 }
 
 export interface DebtOptimizerInput {
   loans: Loan[];
-  monthlyExtraBudget: number; // Extra budget utöver alla lånens toppningar
+  monthlyExtraBudget: number; // Extra belopp varje månad
+  extraBudgetStartMonthOffset: number; // Hur många månader tills extra budget startar
   strategy: 'avalanche' | 'snowball';
+  startDate?: Date;
 }
 
 export interface PayoffMilestone {
