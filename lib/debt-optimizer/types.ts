@@ -2,34 +2,39 @@
 export interface Loan {
   id: string;
   name: string;
-  balance: number; // Skuld i kr
-  interestRate: number; // Årsränta i %
-  currentMonthlyPayment: number; // Ordinarie lägsta/avtalad inbetalning
-  targetMonthlyPayment?: number; // Önskad inbetalning (t.ex. toppa upp till 2000 kr)
-  topUpStartMonthOffset?: number; // Månad när extra inbetalning startar
+  loanType: "Rak amortering" | "Annuitet";
+  balance: number; // Skuld idag
+  interestRate: number; // Ränta i decimal (t.ex. 0.0595 = 5.95%)
+  currentMonthlyPayment: number; // Ord. Betalning/mån
+  targetMonthlyPayment?: number; // Målbelopp (Toppa upp till, t.ex. 2000)
+  extraPaymentFromStart?: number; // Extra amortering från start
+  extraPaymentAfterFreed?: number; // Extra amortering efter föregående lån är klart
 }
 
-export interface CalculationInput {
+export interface StrategyInput {
   loans: Loan[];
-  monthlyExtraBudget: number; // Extra fri budget utöver lånens ordinarie belopp
-  extraBudgetStartMonthOffset: number;
-  strategy: "avalanche" | "snowball";
-  startDate?: Date;
+  oneTimePaymentAmount: number; // Engångsinbetalning (t.ex. 10 000 kr)
+  oneTimePaymentDate: string; // T.ex. "2028-04"
+  startDate: string; // T.ex. "2026-08"
 }
 
-export interface Milestone {
-  loanId: string;
-  loanName: string;
-  payoffDate: string;
-  monthsToPayoff: number;
-  totalInterestPaid: number;
+export interface LoanResult {
+  id: string;
+  name: string;
+  originalEndDate: string;
+  originalTotalInterest: number;
+  newEndDate: string;
+  newTotalInterest: number;
+  interestSaved: number;
+  monthsSaved: number;
 }
 
 export interface CalculationResult {
-  freedomDate: string;
-  totalMonths: number;
-  totalInterestPaid: number;
-  totalSavings: number;
-  monthsSaved: number;
-  milestones: Milestone[];
+  totalOriginalInterest: number;
+  totalNewInterest: number;
+  totalInterestSaved: number;
+  originalFreedomDate: string;
+  newFreedomDate: string;
+  totalMonthsSaved: number;
+  loanResults: LoanResult[];
 }
