@@ -2,9 +2,9 @@
 "use client";
 
 import React, { useState } from "react";
-import { Plus, Trash2, TrendingDown, Calendar, ShieldCheck, Zap } from "lucide-react";
-import { calculateDebtStrategy } from "../../lib/debt-optimizer/engine";
-import type { Loan, DebtOptimizerResult } from "../../lib/debt-optimizer/types";
+import { Plus, Trash2, TrendingDown, Calendar, Zap } from "lucide-react";
+import { calculateDebtStrategy } from "@/lib/debt-optimizer/engine";
+import type { Loan, DebtOptimizerResult } from "@/lib/debt-optimizer/types";
 
 export function DebtOptimizerView() {
   const [loans, setLoans] = useState<Loan[]>([
@@ -82,7 +82,9 @@ export function DebtOptimizerView() {
           <TrendingDown className="w-8 h-8 text-blue-400" />
           <div>
             <div className="text-xs text-slate-400">Uppskattad besparing</div>
-            <div className="text-xl font-semibold text-white">{result.totalSavings.toLocaleString()} kr</div>
+            <div className="text-xl font-semibold text-white">
+              {result.totalSavings.toLocaleString()} kr
+            </div>
           </div>
         </div>
 
@@ -90,7 +92,9 @@ export function DebtOptimizerView() {
           <Zap className="w-8 h-8 text-amber-400" />
           <div>
             <div className="text-xs text-slate-400">Sparade månader</div>
-            <div className="text-xl font-semibold text-white">{result.monthsSaved} månader</div>
+            <div className="text-xl font-semibold text-white">
+              {result.monthsSaved} månader
+            </div>
           </div>
         </div>
       </div>
@@ -99,7 +103,9 @@ export function DebtOptimizerView() {
         <h2 className="text-lg font-semibold text-white">Inställningar</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm text-slate-400 mb-1">Extra månadsbudget (kr)</label>
+            <label className="block text-sm text-slate-400 mb-1">
+              Extra månadsbudget (kr)
+            </label>
             <input
               type="number"
               value={monthlyExtraBudget}
@@ -111,7 +117,7 @@ export function DebtOptimizerView() {
             <label className="block text-sm text-slate-400 mb-1">Strategi</label>
             <select
               value={strategy}
-              onChange={(e) => setStrategy(e.target.value as any)}
+              onChange={(e) => setStrategy(e.target.value as "avalanche" | "snowball")}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white"
             >
               <option value="avalanche">Lavin (Högst ränta först)</option>
@@ -150,7 +156,9 @@ export function DebtOptimizerView() {
                   <input
                     type="number"
                     value={loan.balance}
-                    onChange={(e) => updateLoan(loan.id, "balance", Number(e.target.value))}
+                    onChange={(e) =>
+                      updateLoan(loan.id, "balance", Number(e.target.value))
+                    }
                     className="w-24 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-white text-sm"
                   />
                 </div>
@@ -159,7 +167,9 @@ export function DebtOptimizerView() {
                   <input
                     type="number"
                     value={loan.interestRate}
-                    onChange={(e) => updateLoan(loan.id, "interestRate", Number(e.target.value))}
+                    onChange={(e) =>
+                      updateLoan(loan.id, "interestRate", Number(e.target.value))
+                    }
                     className="w-16 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-white text-sm"
                   />
                 </div>
