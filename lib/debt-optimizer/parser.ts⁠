@@ -1,51 +1,6 @@
-// lib/debt-optimizer/parser.ts
 import type { Loan } from "./types";
 
 export function parseLoanFromText(text: string): Partial<Loan> {
   const result: Partial<Loan> = {};
-
-  const bankNames = [
-    "Nordea", "Swedbank", "SEB", "Handelsbanken", 
-    "SBAB", "Collector", "Santander", "Nordax", 
-    "Anyfin", "Resurs", "ICA Banken", "Klarna"
-  ];
-
-  for (const bank of bankNames) {
-    if (new RegExp(bank, "i").test(text)) {
-      result.name = bank;
-      break;
-    }
-  }
-
-  if (!result.name) {
-    result.name = "Importerat lån";
-  }
-
-  const balanceMatch = text.match(/(?:skuld|belopp|kapital|saldo|totalt)?:?\s*([\d\s]{4,10})\s*(?:kr|SEK)?/i);
-  if (balanceMatch) {
-    const rawVal = balanceMatch[1].replace(/\s+/g, "");
-    const val = parseInt(rawVal, 10);
-    if (!isNaN(val) && val > 1000) {
-      result.balance = val;
-    }
-  }
-
-  const rateMatch = text.match(/(?:ränta|årsränta)?:?\s*(\d+[\.,]\d+)\s*%/i);
-  if (rateMatch) {
-    const rateVal = parseFloat(rateMatch[1].replace(",", "."));
-    if (!isNaN(rateVal) && rateVal > 0 && rateVal < 100) {
-      result.interestRate = rateVal;
-    }
-  }
-
-  const paymentMatch = text.match(/(?:månadskostnad|månadsbelopp|att betala|annuitet|per månad)?:?\s*([\d\s]{3,7})\s*(?:kr|SEK)?/i);
-  if (paymentMatch) {
-    const rawVal = paymentMatch[1].replace(/\s+/g, "");
-    const val = parseInt(rawVal, 10);
-    if (!isNaN(val) && val > 100 && val < (result.balance || 1000000)) {
-      result.currentMonthlyPayment = val;
-    }
-  }
-
   return result;
 }
