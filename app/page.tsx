@@ -1,4 +1,5 @@
-import { DebtOptimizerView } from "../components/debt-optimizer/DebtOptimizerView";
+// app/page.tsx
+import { DebtOptimizerView } from '../components/debt-optimizer/DebtOptimizerView';
 
 export default function Home() {
   return (
