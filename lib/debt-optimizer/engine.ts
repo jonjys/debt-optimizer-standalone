@@ -1,156 +1,155 @@
 // lib/debt-optimizer/engine.ts
-import type { DebtOptimizerInput, DebtOptimizerResult, Loan, PayoffMilestone } from "./types";
+import { Loan, CalculationInput, CalculationResult, Milestone } from "./types";
 
-export function calculateDebtStrategy(input: DebtOptimizerInput): DebtOptimizerResult {
+export function calculateDebtStrategy(input: CalculationInput): CalculationResult {
   const { loans, monthlyExtraBudget, extraBudgetStartMonthOffset, strategy, startDate = new Date() } = input;
 
   if (!loans || loans.length === 0) {
     return {
-      totalOriginalInterest: 0,
-      totalOptimizedInterest: 0,
+      freedomDate: "-",
+      totalMonths: 0,
+      totalInterestPaid: 0,
       totalSavings: 0,
       monthsSaved: 0,
-      freedomDate: formatDate(startDate),
       milestones: [],
     };
   }
 
-  // 1. Grundscenario: Ordinarie inbetalningar utan extra budget eller rollover-bonustoppning
-  const baseResult = simulatePayoffs(loans, 0, 0, strategy, false, startDate);
+  // 1. Beräkna baslinje (utan extra inbetalningar) för att kunna mäta besparing
+  const baseline = runSimulation(loans, 0, 1, "avalanche", false);
 
-  // 2. Optimerat scenario: Med toppning, valfritt startdatum och automatisk ROLLOVER (frigjorda pengar förs över)
-  const optimizedResult = simulatePayoffs(loans, monthlyExtraBudget, extraBudgetStartMonthOffset, strategy, true, startDate);
-
-  const totalSavings = Math.max(0, Math.round(baseResult.totalInterest - optimizedResult.totalInterest));
-  const monthsSaved = Math.max(0, baseResult.totalMonths - optimizedResult.totalMonths);
+  // 2. Beräkna optimerad strategi med kaskad/överskott
+  const optimized = runSimulation(
+    loans,
+    monthlyExtraBudget,
+    extraBudgetStartMonthOffset,
+    strategy,
+    true
+  );
 
   const freedomDateObj = new Date(startDate);
-  freedomDateObj.setMonth(freedomDateObj.getMonth() + optimizedResult.totalMonths);
-  const freedomDate = formatDate(freedomDateObj);
+  freedomDateObj.setMonth(freedomDateObj.getMonth() + optimized.totalMonths);
+  const freedomDateStr = `${freedomDateObj.getFullYear()}-${String(freedomDateObj.getMonth() + 1).padStart(2, "0")}`;
+
+  const monthsSaved = Math.max(0, baseline.totalMonths - optimized.totalMonths);
+  const totalSavings = Math.max(0, baseline.totalInterestPaid - optimized.totalInterestPaid);
 
   return {
-    totalOriginalInterest: Math.round(baseResult.totalInterest),
-    totalOptimizedInterest: Math.round(optimizedResult.totalInterest),
-    totalSavings,
+    freedomDate: freedomDateStr,
+    totalMonths: optimized.totalMonths,
+    totalInterestPaid: Math.round(optimized.totalInterestPaid),
+    totalSavings: Math.round(totalSavings),
     monthsSaved,
-    freedomDate,
-    milestones: optimizedResult.milestones,
+    milestones: optimized.milestones,
   };
 }
 
-function simulatePayoffs(
-  originalLoans: Loan[],
+function runSimulation(
+  initialLoans: Loan[],
   extraBudget: number,
-  extraStartOffset: number,
+  extraStartMonth: number,
   strategy: "avalanche" | "snowball",
-  useOptimizations: boolean,
-  startDate: Date
+  enableCascade: boolean
 ) {
-  let activeLoans = originalLoans.map((l) => ({
+  let activeLoans = initialLoans.map((l) => ({
     ...l,
     currentBalance: l.balance,
+    totalInterestPaid: 0,
     isPaidOff: false,
+    payoffMonth: 0,
   }));
 
-  let totalInterest = 0;
-  let months = 0;
-  const milestones: PayoffMilestone[] = [];
+  let currentMonth = 0;
   const maxMonths = 600;
+  const milestones: Milestone[] = [];
 
-  while (activeLoans.some((l) => l.currentBalance > 0) && months < maxMonths) {
-    months++;
-    
-    // Beräkna hur mycket frigjort utrymme från FÄRDIGBETALDA lån som rullas över (Snowball Rollover)
-    let freedUpBudgetFromPaidLoans = 0;
-    if (useOptimizations) {
-      for (const l of activeLoans) {
-        if (l.currentBalance <= 0) {
-          const loanPayment = l.targetMonthlyPayment && l.targetMonthlyPayment > l.currentMonthlyPayment
-            ? l.targetMonthlyPayment
-            : l.currentMonthlyPayment;
-          freedUpBudgetFromPaidLoans += loanPayment;
-        }
-      }
-    }
+  while (activeLoans.some((l) => !l.isPaidOff) && currentMonth < maxMonths) {
+    currentMonth++;
 
-    // Extra budget aktiveras från vald startmånad
-    const activeExtraBudget = (useOptimizations && months >= extraStartOffset) ? extraBudget : 0;
-    let poolForFocusLoan = activeExtraBudget + freedUpBudgetFromPaidLoans;
-
-    // 1. Ordinarie / Toppade inbetalningar på alla aktiva lån
+    // 1. Räkna ut månadens ränta
     for (const loan of activeLoans) {
-      if (loan.currentBalance <= 0) continue;
-
-      const monthlyRate = loan.interestRate / 100 / 12;
-      const monthlyInterest = loan.currentBalance * monthlyRate;
-      totalInterest += monthlyInterest;
-      loan.currentBalance += monthlyInterest;
-
-      let basePayment = loan.currentMonthlyPayment || 0;
-      
-      // Använd toppning om det är aktiverat och startmånaden har passerats
-      if (useOptimizations && loan.targetMonthlyPayment && loan.targetMonthlyPayment > basePayment) {
-        const topUpOffset = loan.topUpStartMonthOffset || 0;
-        if (months >= topUpOffset) {
-          basePayment = loan.targetMonthlyPayment;
-        }
-      }
-
-      if (basePayment <= monthlyInterest) {
-        basePayment = monthlyInterest + Math.max(loan.currentBalance * 0.005, 100);
-      }
-
-      const payment = Math.min(loan.currentBalance, basePayment);
-      loan.currentBalance -= payment;
-
-      if (loan.currentBalance <= 0 && !loan.isPaidOff) {
-        loan.isPaidOff = true;
-        recordMilestone(milestones, loan, months, totalInterest, startDate);
+      if (!loan.isPaidOff) {
+        const monthlyInterest = (loan.currentBalance * (loan.interestRate / 100)) / 12;
+        loan.totalInterestPaid += monthlyInterest;
+        loan.currentBalance += monthlyInterest;
       }
     }
 
-    // 2. Skicka all överbliven pott (extra budget + frigjort från Nordea) till prioritetslånet (Nordax)
-    const remainingLoans = activeLoans.filter((l) => l.currentBalance > 0);
-    if (useOptimizations && remainingLoans.length > 0 && poolForFocusLoan > 0) {
-      if (strategy === "avalanche") {
-        remainingLoans.sort((a, b) => b.interestRate - a.interestRate);
-      } else {
-        remainingLoans.sort((a, b) => a.currentBalance - b.currentBalance);
+    // 2. Samla ihop extra potten (extra budget + avbetalade lån)
+    let extraPool = currentMonth >= extraStartMonth ? extraBudget : 0;
+
+    if (enableCascade) {
+      for (const loan of activeLoans) {
+        if (loan.isPaidOff) {
+          const freedAmount = Math.max(loan.targetMonthlyPayment || 0, loan.currentMonthlyPayment);
+          extraPool += freedAmount;
+        }
       }
+    }
 
-      const focusLoan = remainingLoans[0];
-      const extraPayment = Math.min(focusLoan.currentBalance, poolForFocusLoan);
-      focusLoan.currentBalance -= extraPayment;
+    // 3. Dra ordinarie inbetalning
+    for (const loan of activeLoans) {
+      if (!loan.isPaidOff) {
+        const targetPayment = loan.targetMonthlyPayment && loan.targetMonthlyPayment > loan.currentMonthlyPayment
+          ? loan.targetMonthlyPayment
+          : loan.currentMonthlyPayment;
 
-      if (focusLoan.currentBalance <= 0 && !focusLoan.isPaidOff) {
-        focusLoan.isPaidOff = true;
-        recordMilestone(milestones, focusLoan, months, totalInterest, startDate);
+        const startOffset = loan.topUpStartMonthOffset || 1;
+        const actualPayment = currentMonth >= startOffset ? targetPayment : loan.currentMonthlyPayment;
+
+        const payment = Math.min(loan.currentBalance, actualPayment);
+        loan.currentBalance -= payment;
+
+        if (loan.currentBalance <= 0.01) {
+          loan.currentBalance = 0;
+          loan.isPaidOff = true;
+          loan.payoffMonth = currentMonth;
+        }
+      }
+    }
+
+    // 4. Lägg hela överskottspotten på prioritetslånet enligt valt system
+    let remainingLoans = activeLoans.filter((l) => !l.isPaidOff);
+    if (remainingLoans.length > 0 && extraPool > 0) {
+      remainingLoans.sort((a, b) => {
+        if (strategy === "avalanche") {
+          return b.interestRate - a.interestRate;
+        } else {
+          return a.currentBalance - b.currentBalance;
+        }
+      });
+
+      let targetLoan = remainingLoans[0];
+      const extraPayment = Math.min(targetLoan.currentBalance, extraPool);
+      targetLoan.currentBalance -= extraPayment;
+
+      if (targetLoan.currentBalance <= 0.01) {
+        targetLoan.currentBalance = 0;
+        targetLoan.isPaidOff = true;
+        targetLoan.payoffMonth = currentMonth;
       }
     }
   }
+
+  activeLoans.forEach((l) => {
+    const payoffDateObj = new Date();
+    payoffDateObj.setMonth(payoffDateObj.getMonth() + l.payoffMonth);
+    const dateStr = `${payoffDateObj.getFullYear()}-${String(payoffDateObj.getMonth() + 1).padStart(2, "0")}`;
+
+    milestones.push({
+      loanId: l.id,
+      loanName: l.name,
+      payoffDate: dateStr,
+      monthsToPayoff: l.payoffMonth,
+      totalInterestPaid: Math.round(l.totalInterestPaid),
+    });
+  });
+
+  const totalInterestPaid = activeLoans.reduce((sum, l) => sum + l.totalInterestPaid, 0);
 
   return {
-    totalInterest,
-    totalMonths: months,
+    totalMonths: currentMonth,
+    totalInterestPaid,
     milestones,
   };
-}
-
-function recordMilestone(milestones: PayoffMilestone[], loan: any, months: number, interest: number, startDate: Date) {
-  if (!milestones.some((m) => m.loanId === loan.id)) {
-    const d = new Date(startDate);
-    d.setMonth(d.getMonth() + months);
-    milestones.push({
-      loanId: loan.id,
-      loanName: loan.name,
-      payoffDate: formatDate(d),
-      totalInterestPaid: Math.round(interest),
-    });
-  }
-}
-
-function formatDate(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
 }
