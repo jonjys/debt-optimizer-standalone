@@ -1,28 +1,27 @@
 // lib/debt-optimizer/types.ts
-
-export type AmortizationType = "annuity" | "straight";
+export type AmortizationType = "annuity" | "straight" | "free";
 
 export interface Loan {
   id: string;
   name: string;
-  balance: number; // Ursprunglig skuld
-  interestRate: number; // Årsränta i %
+  balance: number;
+  interestRate: number;
   amortizationType: AmortizationType;
-  fixedAmortization?: number; // Fast amorteringsbelopp per månad (t.ex. 1389 kr)
-  monthlyFee?: number; // Aviavgift etc.
-  targetMonthlyPayment?: number; // Önskad totalmånadsbetalning/toppning (t.ex. 2000 kr)
+  fixedAmortization?: number;
+  monthlyFee?: number;
+  targetMonthlyPayment?: number;
 }
 
 export interface DebtOptimizerInput {
   loans: Loan[];
-  monthlyExtraBudget: number; // Extra utrymme utöver lånen
-  strategy: "avalanche" | "snowball"; // Avalanche = Högst ränta först
+  monthlyExtraBudget: number;
+  strategy: "avalanche" | "snowball";
 }
 
 export interface PayoffMilestone {
   loanId: string;
   loanName: string;
-  payoffDate: string; // YYYY-MM
+  payoffDate: string;
   totalInterestPaid: number;
 }
 
