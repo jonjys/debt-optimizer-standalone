@@ -1,0 +1,11 @@
+{
+  "remoteName": "origin",
+  "projects": [
+    {
+      "id": "prj_zbxODWIqxO5F7GxZsfOXTquFyBU3",
+      "name": "debt-optimizer-standalone",
+      "directory": ".",
+      "orgId": "team_r5F4djJEP3c1KX8a0Jr4VO6o"
+    }
+  ]
+}
