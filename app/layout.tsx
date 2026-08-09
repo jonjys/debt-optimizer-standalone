@@ -1,10 +1,9 @@
-// app/layout.tsx
 import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "Karma - Skuldoptimerare",
-  description: "Lånekalkylator och avbetalningsstrategi",
+  description: "Lånekalkylator och avbetalningsstrategi med engångsinbetalningar",
 };
 
 export default function RootLayout({
