@@ -1,37 +1,35 @@
 // lib/debt-optimizer/types.ts
-export type AmortizationType = 'annuity' | 'straight';
-
 export interface Loan {
   id: string;
   name: string;
-  balance: number; // Kapitalskuld
-  interestRate: number; // Årsränta (%)
-  amortizationType: AmortizationType;
-  currentMonthlyPayment: number; // Ordinarie betalning (kr/mån)
-  targetMonthlyPayment?: number; // Önskad toppning (kr/mån)
-  topUpStartMonthOffset?: number; // Månader tills toppning startar (0 = direkt nästa månad)
+  balance: number; // Skuld i kr
+  interestRate: number; // Årsränta i %
+  currentMonthlyPayment: number; // Ordinarie lägsta/avtalad inbetalning
+  targetMonthlyPayment?: number; // Önskad inbetalning (t.ex. toppa upp till 2000 kr)
+  topUpStartMonthOffset?: number; // Månad när extra inbetalning startar
 }
 
-export interface DebtOptimizerInput {
+export interface CalculationInput {
   loans: Loan[];
-  monthlyExtraBudget: number; // Extra belopp varje månad
-  extraBudgetStartMonthOffset: number; // Hur många månader tills extra budget startar
-  strategy: 'avalanche' | 'snowball';
+  monthlyExtraBudget: number; // Extra fri budget utöver lånens ordinarie belopp
+  extraBudgetStartMonthOffset: number;
+  strategy: "avalanche" | "snowball";
   startDate?: Date;
 }
 
-export interface PayoffMilestone {
+export interface Milestone {
   loanId: string;
   loanName: string;
   payoffDate: string;
+  monthsToPayoff: number;
   totalInterestPaid: number;
 }
 
-export interface DebtOptimizerResult {
-  totalOriginalInterest: number;
-  totalOptimizedInterest: number;
+export interface CalculationResult {
+  freedomDate: string;
+  totalMonths: number;
+  totalInterestPaid: number;
   totalSavings: number;
   monthsSaved: number;
-  freedomDate: string;
-  milestones: PayoffMilestone[];
+  milestones: Milestone[];
 }
