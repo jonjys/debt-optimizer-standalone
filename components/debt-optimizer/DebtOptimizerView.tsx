@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { Plus, Trash2, TrendingDown, Calendar, Zap, Globe, Table as TableIcon, Sliders } from "lucide-react";
+import { Plus, Trash2, TrendingDown, Calendar, Zap, Globe, Table as TableIcon, Sliders, ArrowRight } from "lucide-react";
 import { calculateDebtStrategy } from "@/lib/debt-optimizer/engine";
 import type { Loan } from "@/lib/debt-optimizer/types";
 
@@ -18,6 +18,7 @@ export function DebtOptimizerView() {
       amortizationType: "annuity",
       currentMonthlyPayment: 1389,
       targetMonthlyPayment: 2000,
+      topUpStartMonthOffset: 1, // Börja nästa månad
     },
     {
       id: "2",
@@ -26,20 +27,24 @@ export function DebtOptimizerView() {
       interestRate: 9.2,
       amortizationType: "annuity",
       currentMonthlyPayment: 6200,
-      targetMonthlyPayment: 7500,
+      targetMonthlyPayment: 6200,
+      topUpStartMonthOffset: 1,
     },
   ]);
 
-  const [monthlyExtraBudget, setMonthlyExtraBudget] = useState<number>(1000);
+  const [monthlyExtraBudget, setMonthlyExtraBudget] = useState<number>(500);
+  const [extraStartMonthOffset, setExtraStartMonthOffset] = useState<number>(1); // 1 = Nästa månad
   const [strategy, setStrategy] = useState<"avalanche" | "snowball">("avalanche");
 
   const result = useMemo(() => {
     return calculateDebtStrategy({
       loans,
       monthlyExtraBudget,
+      extraBudgetStartMonthOffset: extraStartMonthOffset,
       strategy,
+      startDate: new Date(),
     });
-  }, [loans, monthlyExtraBudget, strategy]);
+  }, [loans, monthlyExtraBudget, extraStartMonthOffset, strategy]);
 
   const handleAddLoan = () => {
     const newLoan: Loan = {
@@ -50,6 +55,7 @@ export function DebtOptimizerView() {
       amortizationType: "annuity",
       currentMonthlyPayment: 1000,
       targetMonthlyPayment: 1500,
+      topUpStartMonthOffset: 1,
     };
     setLoans([...loans, newLoan]);
   };
@@ -66,62 +72,64 @@ export function DebtOptimizerView() {
 
   const t = {
     sv: {
-      title: "Skuldoptimering & Kalkyl",
-      subtitle: "Interaktiv matris för snabbare avbetalning och räntebesparing.",
+      title: "Skuldoptimering & Matris",
+      subtitle: "Automatisk överskjutning av frigjorda pengar och tidsinställda toppningar.",
       freedomDate: "Skuldfri datum",
       savings: "Uppskattad besparing",
       monthsSaved: "Sparade månader",
       monthsUnit: "månader",
-      settings: "Strategi & Extra Budget",
-      extraBudget: "Extra månadsbudget utöver alla toppningar (kr)",
+      settings: "Strategi & Extra Månadsbudget",
+      extraBudget: "Extra månadsbudget (kr)",
+      startFrom: "Börja betala extra från",
+      nextMonth: "Nästa månad",
+      in3Months: "Om 3 månader",
+      in6Months: "Om 6 månader",
       strategy: "Optimeringstyp",
       avalanche: "Lavin (Högst ränta först)",
       snowball: "Snöboll (Minst skuld först)",
-      loansTitle: "Skuldmatris (Excel-vy)",
+      loansTitle: "Dina lån (Excel-vy)",
       addLoan: "Ny rad",
       loanName: "Lånenamn / Borgenär",
       balance: "Skuldbelopp (kr)",
       rate: "Ränta (%)",
-      currentPayment: "Nuvarande betalning (kr/mån)",
+      currentPayment: "Nuvarande (kr/mån)",
       targetPayment: "Toppa upp till (kr/mån)",
-      type: "Typ",
-      annuity: "Annuitet",
-      straight: "Rak",
       milestones: "Beräknade Slutdatum",
-      paidOff: "Klart",
       interestPaid: "Ack. ränta",
+      rolloverNotice: "⚡ När ett lån är färdigbetalt överförs hela dess månadskostnad automatiskt till nästa lån!",
     },
     en: {
       title: "Debt Optimizer & Sheet",
-      subtitle: "Interactive matrix for faster payoff and interest savings.",
+      subtitle: "Automatic rollover of freed-up funds and scheduled top-ups.",
       freedomDate: "Debt-free Date",
       savings: "Estimated Savings",
       monthsSaved: "Months Saved",
       monthsUnit: "months",
-      settings: "Strategy & Extra Budget",
-      extraBudget: "Extra monthly budget beyond top-ups ($/kr)",
+      settings: "Strategy & Extra Monthly Budget",
+      extraBudget: "Extra monthly budget ($/kr)",
+      startFrom: "Start extra payment from",
+      nextMonth: "Next month",
+      in3Months: "In 3 months",
+      in6Months: "In 6 months",
       strategy: "Optimization Strategy",
       avalanche: "Avalanche (Highest rate first)",
       snowball: "Snowball (Lowest balance first)",
-      loansTitle: "Debt Matrix (Sheet View)",
+      loansTitle: "Your Loans (Sheet View)",
       addLoan: "Add Row",
       loanName: "Loan Name / Creditor",
       balance: "Balance",
       rate: "Interest (%)",
       currentPayment: "Current Payment (kr/mo)",
       targetPayment: "Top-up to (kr/mo)",
-      type: "Type",
-      annuity: "Annuity",
-      straight: "Straight",
       milestones: "Estimated Payoff Dates",
-      paidOff: "Paid",
       interestPaid: "Acc. Interest",
+      rolloverNotice: "⚡ When a loan is paid off, its payment automatically rolls over to the next loan!",
     },
   }[lang];
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 py-4 px-2">
-      {/* Header */}
+      {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
@@ -152,7 +160,7 @@ export function DebtOptimizerView() {
         </div>
       </div>
 
-      {/* KPI Cards */}
+      {/* KPI Overview */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-4 flex items-center justify-between">
           <div>
@@ -183,10 +191,15 @@ export function DebtOptimizerView() {
         </div>
       </div>
 
+      {/* Rollover Banner */}
+      <div className="bg-teal-950/40 border border-teal-800/50 rounded-lg p-3 text-xs text-teal-300 font-medium flex items-center gap-2">
+        <span>{t.rolloverNotice}</span>
+      </div>
+
       {/* Main Grid Section */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 items-start">
         
-        {/* Matrix Table */}
+        {/* Loan Matrix */}
         <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
           <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900">
             <h2 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -274,13 +287,14 @@ export function DebtOptimizerView() {
           </div>
         </div>
 
-        {/* Sidebar Controls & Results */}
+        {/* Sidebar Controls & Output */}
         <div className="space-y-4">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3 shadow-lg">
             <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
               <Sliders className="w-3.5 h-3.5 text-teal-400" />
               {t.settings}
             </h2>
+            
             <div>
               <label className="block text-xs text-slate-400 mb-1">{t.extraBudget}</label>
               <input
@@ -290,6 +304,20 @@ export function DebtOptimizerView() {
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-teal-500 font-mono"
               />
             </div>
+
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">{t.startFrom}</label>
+              <select
+                value={extraStartMonthOffset}
+                onChange={(e) => setExtraStartMonthOffset(Number(e.target.value))}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-teal-500"
+              >
+                <option value={1}>{t.nextMonth}</option>
+                <option value={3}>{t.in3Months}</option>
+                <option value={6}>{t.in6Months}</option>
+              </select>
+            </div>
+
             <div>
               <label className="block text-xs text-slate-400 mb-1">{t.strategy}</label>
               <select
