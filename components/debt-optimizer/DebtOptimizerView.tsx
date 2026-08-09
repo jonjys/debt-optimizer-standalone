@@ -4,16 +4,59 @@
 import React, { useState, useMemo, ChangeEvent } from "react";
 import { 
   Plus, Trash2, TrendingDown, Calendar, Zap, Globe, Table as TableIcon, 
-  Sliders, FileText, Upload, RefreshCw, Sparkles, CheckCircle2, RotateCcw 
+  Sliders, FileText, Upload, Sparkles, CheckCircle2, RotateCcw 
 } from "lucide-react";
 import { calculateDebtStrategy } from "@/lib/debt-optimizer/engine";
-import { parseLoanFromText } from "@/lib/debt-optimizer/parser";
 import type { Loan } from "@/lib/debt-optimizer/types";
+
+// Inbyggd parser för att undvika filberoenden
+function parseLoanFromText(text: string): Partial<Loan> {
+  const result: Partial<Loan> = {};
+
+  const bankNames = ["Nordea", "Swedbank", "SEB", "Handelsbanken", "SBAB", "Collector", "Santander", "Nordax", "Anyfin", "Resurs", "ICA Banken", "Klarna"];
+  for (const bank of bankNames) {
+    if (new RegExp(bank, "i").test(text)) {
+      result.name = bank;
+      break;
+    }
+  }
+
+  if (!result.name) {
+    result.name = "Importerat lån";
+  }
+
+  const balanceMatch = text.match(/(?:skuld|belopp|kapital|saldo|totalt)?:?\s*([\d\s]{4,10})\s*(?:kr|SEK)?/i);
+  if (balanceMatch) {
+    const rawVal = balanceMatch[1].replace(/\s+/g, "");
+    const val = parseInt(rawVal, 10);
+    if (!isNaN(val) && val > 1000) {
+      result.balance = val;
+    }
+  }
+
+  const rateMatch = text.match(/(?:ränta|årsränta)?:?\s*(\d+[\.,]\d+)\s*%/i);
+  if (rateMatch) {
+    const rateVal = parseFloat(rateMatch[1].replace(",", "."));
+    if (!isNaN(rateVal) && rateVal > 0 && rateVal < 100) {
+      result.interestRate = rateVal;
+    }
+  }
+
+  const paymentMatch = text.match(/(?:månadskostnad|månadsbelopp|att betala|annuitet|per månad)?:?\s*([\d\s]{3,7})\s*(?:kr|SEK)?/i);
+  if (paymentMatch) {
+    const rawVal = paymentMatch[1].replace(/\s+/g, "");
+    const val = parseInt(rawVal, 10);
+    if (!isNaN(val) && val > 100 && val < (result.balance || 1000000)) {
+      result.currentMonthlyPayment = val;
+    }
+  }
+
+  return result;
+}
 
 export function DebtOptimizerView() {
   const [lang, setLang] = useState<"sv" | "en">("sv");
   
-  // Mall-data (kan nollställas)
   const defaultLoans: Loan[] = [
     {
       id: "1",
@@ -42,7 +85,6 @@ export function DebtOptimizerView() {
   const [extraStartMonthOffset, setExtraStartMonthOffset] = useState<number>(1);
   const [strategy, setStrategy] = useState<"avalanche" | "snowball">("avalanche");
 
-  // Modal & Importhantering
   const [showScanModal, setShowScanModal] = useState<boolean>(false);
   const [rawPastedText, setRawPastedText] = useState<string>("");
   const [scanSuccessMessage, setScanSuccessMessage] = useState<string>("");
@@ -87,7 +129,6 @@ export function DebtOptimizerView() {
     setLoans(loans.map((l) => (l.id === id ? { ...l, [field]: value } : l)));
   };
 
-  // Skannings- och filanalysator
   const handleProcessText = (text: string) => {
     const parsed = parseLoanFromText(text);
     const newLoan: Loan = {
@@ -246,7 +287,6 @@ export function DebtOptimizerView() {
         </div>
       </div>
 
-      {/* Notis om lyckad skanning */}
       {scanSuccessMessage && (
         <div className="bg-emerald-950/80 border border-emerald-500/50 text-emerald-300 px-4 py-2.5 rounded-xl text-xs font-medium flex items-center gap-2 animate-fade-in">
           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -285,10 +325,10 @@ export function DebtOptimizerView() {
         </div>
       </div>
 
-      {/* Huvudsektion: Lånematris + Interaktiva Reglage */}
+      {/* Huvudsektion */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 items-start">
         
-        {/* Lånelista & Inmatning */}
+        {/* Lånelista */}
         <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
           <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
@@ -381,7 +421,7 @@ export function DebtOptimizerView() {
           )}
         </div>
 
-        {/* Sidopanel med Interaktiva Reglage & Slutdatum */}
+        {/* Sidopanel */}
         <div className="space-y-4">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4 shadow-lg">
             <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
@@ -389,7 +429,6 @@ export function DebtOptimizerView() {
               {t.settings}
             </h2>
             
-            {/* Slider för extra budget */}
             <div className="space-y-1.5">
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">{t.extraBudget}</span>
@@ -406,7 +445,6 @@ export function DebtOptimizerView() {
               />
             </div>
 
-            {/* Slider för startmånad */}
             <div className="space-y-1.5">
               <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-400">{t.startFrom}</span>
@@ -423,7 +461,6 @@ export function DebtOptimizerView() {
               />
             </div>
 
-            {/* Strategi-väljare */}
             <div className="pt-2">
               <label className="block text-xs text-slate-400 mb-1">{t.strategy}</label>
               <select
@@ -437,7 +474,6 @@ export function DebtOptimizerView() {
             </div>
           </div>
 
-          {/* Slutdatum per lån */}
           {result.milestones.length > 0 && (
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3 shadow-lg">
               <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
@@ -467,7 +503,7 @@ export function DebtOptimizerView() {
 
       </div>
 
-      {/* Modal för Skanning / Bifoga underlag */}
+      {/* Modal för Skanning */}
       {showScanModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-lg w-full space-y-4 shadow-2xl">
@@ -486,7 +522,6 @@ export function DebtOptimizerView() {
 
             <p className="text-xs text-slate-400">{t.scanModalDesc}</p>
 
-            {/* Filuppladdning */}
             <div className="border-2 border-dashed border-slate-800 hover:border-teal-500/50 rounded-xl p-4 text-center transition">
               <Upload className="w-6 h-6 text-slate-500 mx-auto mb-2" />
               <label className="text-xs text-teal-400 font-semibold cursor-pointer">
@@ -504,7 +539,6 @@ export function DebtOptimizerView() {
               <span className="bg-slate-900 px-2 text-[10px] text-slate-500 uppercase">eller klistra in</span>
             </div>
 
-            {/* Textområde */}
             <textarea
               rows={5}
               value={rawPastedText}
