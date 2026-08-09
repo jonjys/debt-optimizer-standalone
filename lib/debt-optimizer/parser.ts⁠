@@ -4,8 +4,12 @@ import type { Loan } from "./types";
 export function parseLoanFromText(text: string): Partial<Loan> {
   const result: Partial<Loan> = {};
 
-  // Hitta namn/borgenär (t.ex. Nordea, Swedbank, SBAB, Collector, Santander, Länsförsäkringar)
-  const bankNames = ["Nordea", "Swedbank", "SEB", "Handelsbanken", "SBAB", "Collector", "Santander", "Nordax", "Anyfin", "Resurs", "ICA Banken", "Klarna"];
+  const bankNames = [
+    "Nordea", "Swedbank", "SEB", "Handelsbanken", 
+    "SBAB", "Collector", "Santander", "Nordax", 
+    "Anyfin", "Resurs", "ICA Banken", "Klarna"
+  ];
+
   for (const bank of bankNames) {
     if (new RegExp(bank, "i").test(text)) {
       result.name = bank;
@@ -17,7 +21,6 @@ export function parseLoanFromText(text: string): Partial<Loan> {
     result.name = "Importerat lån";
   }
 
-  // Sök efter kapitalskuld/belopp (t.ex. "150 000 kr" eller "Skuld: 45000")
   const balanceMatch = text.match(/(?:skuld|belopp|kapital|saldo|totalt)?:?\s*([\d\s]{4,10})\s*(?:kr|SEK)?/i);
   if (balanceMatch) {
     const rawVal = balanceMatch[1].replace(/\s+/g, "");
@@ -27,7 +30,6 @@ export function parseLoanFromText(text: string): Partial<Loan> {
     }
   }
 
-  // Sök efter ränta (t.ex. "Ränta: 6,5 %" eller "5.2%")
   const rateMatch = text.match(/(?:ränta|årsränta)?:?\s*(\d+[\.,]\d+)\s*%/i);
   if (rateMatch) {
     const rateVal = parseFloat(rateMatch[1].replace(",", "."));
@@ -36,7 +38,6 @@ export function parseLoanFromText(text: string): Partial<Loan> {
     }
   }
 
-  // Sök efter månadsbelopp (t.ex. "Månadskostnad: 1 850 kr" eller "Månadsbelopp 2500")
   const paymentMatch = text.match(/(?:månadskostnad|månadsbelopp|att betala|annuitet|per månad)?:?\s*([\d\s]{3,7})\s*(?:kr|SEK)?/i);
   if (paymentMatch) {
     const rawVal = paymentMatch[1].replace(/\s+/g, "");
