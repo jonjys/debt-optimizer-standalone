@@ -1,1 +1,1 @@
-// app/page.tsx`nimport { DebtOptimizerView } from "../components/debt-optimizer/DebtOptimizerView";`n`nexport default function Home() {`n  return (`n    <main className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8">`n      <DebtOptimizerView />`n    </main>`n  );`n}
+﻿import { DebtOptimizerView } from "../components/debt-optimizer/DebtOptimizerView";`n`nexport default function Home() {`n  return (`n    <main className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8">`n      <DebtOptimizerView />`n    </main>`n  );`n}
