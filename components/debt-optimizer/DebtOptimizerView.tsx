@@ -20,7 +20,6 @@ import type {
   PayoffStrategy,
 } from "@/lib/debt-optimizer/types";
 
-/* ---------- Animated number ---------- */
 function AnimatedNumber({
   value,
   className = "",
@@ -30,7 +29,6 @@ function AnimatedNumber({
 }) {
   const [display, setDisplay] = useState(value);
   const prev = useRef(value);
-
   useEffect(() => {
     const from = prev.current;
     const to = value;
@@ -49,13 +47,11 @@ function AnimatedNumber({
     };
     requestAnimationFrame(tick);
   }, [value]);
-
   return (
     <span className={className}>{display.toLocaleString("sv-SE")}</span>
   );
 }
 
-/* ---------- Number field that allows empty / typing ---------- */
 function NumField({
   value,
   onChange,
@@ -67,45 +63,36 @@ function NumField({
 }) {
   const [text, setText] = useState(String(value));
   const focused = useRef(false);
-
   useEffect(() => {
     if (!focused.current) setText(String(value));
   }, [value]);
-
   return (
-    <div className="relative">
-      <input
-        type="text"
-        inputMode="decimal"
-        value={text}
-        onFocus={() => {
-          focused.current = true;
-        }}
-        onBlur={() => {
-          focused.current = false;
-          const n = parseFloat(text.replace(",", "."));
-          if (!isNaN(n)) {
-            onChange(n);
-            setText(String(n));
-          } else {
-            setText(String(value));
-          }
-        }}
-        onChange={(e) => {
-          const v = e.target.value.replace(/[^\d.,]/g, "");
-          setText(v);
-          const n = parseFloat(v.replace(",", "."));
-          if (!isNaN(n) && v !== "" && v !== "." && v !== ",") {
-            onChange(n);
-          }
-        }}
-        className={className}
-      />
-    </div>
+    <input
+      type="text"
+      inputMode="decimal"
+      value={text}
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onBlur={() => {
+        focused.current = false;
+        const n = parseFloat(text.replace(",", "."));
+        if (!isNaN(n)) {
+          onChange(n);
+          setText(String(n));
+        } else setText(String(value));
+      }}
+      onChange={(e) => {
+        const v = e.target.value.replace(/[^\d.,]/g, "");
+        setText(v);
+        const n = parseFloat(v.replace(",", "."));
+        if (!isNaN(n) && v !== "" && v !== "." && v !== ",") onChange(n);
+      }}
+      className={className}
+    />
   );
 }
 
-/* ---------- Timeline ---------- */
 function FreedomTimeline({
   originalMonths,
   newMonths,
@@ -144,6 +131,8 @@ const defaultLoans = (): Loan[] => [
     interestRate: 0.0595,
     currentMonthlyPayment: 1389,
     extraMonthly: 611,
+    extraMonthlyEnabled: true,
+    extraMonthlyFrom: "2026-08",
   },
   {
     id: "nordax",
@@ -153,16 +142,19 @@ const defaultLoans = (): Loan[] => [
     interestRate: 0.0909,
     currentMonthlyPayment: 6888,
     extraMonthly: 500,
+    extraMonthlyEnabled: true,
+    extraMonthlyFrom: "2026-08",
   },
-];export function DebtOptimizerView() {
+];
+
+export function DebtOptimizerView() {
   const [loans, setLoans] = useState<Loan[]>(defaultLoans);
   const [oneTimePayments, setOneTimePayments] = useState<OneTimePayment[]>([
-    { id: "1", date: "2028-04", amount: 10000 },
-    { id: "2", date: "2029-04", amount: 12000 },
+    { id: "1", date: "2028-04", amount: 10000, loanId: "nordax" },
+    { id: "2", date: "2029-04", amount: 12000, loanId: "nordax" },
   ]);
   const [startDate, setStartDate] = useState("2026-08");
   const [strategy, setStrategy] = useState<PayoffStrategy>("cascade");
-  const [globalExtra, setGlobalExtra] = useState(0);
   const [showOneTime, setShowOneTime] = useState(true);
 
   const result = useMemo(
@@ -172,9 +164,8 @@ const defaultLoans = (): Loan[] => [
         oneTimePayments,
         startDate,
         strategy,
-        globalExtraMonthly: globalExtra,
       }),
-    [loans, oneTimePayments, startDate, strategy, globalExtra]
+    [loans, oneTimePayments, startDate, strategy]
   );
 
   const monthsBetween = (from: string, to: string) => {
@@ -203,6 +194,8 @@ const defaultLoans = (): Loan[] => [
         interestRate: 0.08,
         currentMonthlyPayment: 1000,
         extraMonthly: 0,
+        extraMonthlyEnabled: false,
+        extraMonthlyFrom: startDate,
       },
     ]);
   };
@@ -211,16 +204,22 @@ const defaultLoans = (): Loan[] => [
     setLoans((prev) => prev.filter((l) => l.id !== id));
   };
 
-  const addOneTime = () => {
+  const addOneTime = (loanId?: string) => {
     setOneTimePayments((prev) => [
       ...prev,
-      { id: Date.now().toString(), date: "2028-04", amount: 10000 },
+      {
+        id: Date.now().toString(),
+        date: startDate,
+        amount: 10000,
+        loanId: loanId || loans[0]?.id,
+      },
     ]);
+    setShowOneTime(true);
   };
 
   const updateOneTime = (
     id: string,
-    field: "date" | "amount",
+    field: "date" | "amount" | "loanId",
     val: string | number
   ) => {
     setOneTimePayments((prev) =>
@@ -230,12 +229,7 @@ const defaultLoans = (): Loan[] => [
 
   const removeOneTime = (id: string) => {
     setOneTimePayments((prev) => prev.filter((p) => p.id !== id));
-  };
-
-  const topUpTo = (loan: Loan) =>
-    (loan.currentMonthlyPayment || 0) + (loan.extraMonthly || 0);
-
-  return (
+  };  return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <div className="max-w-6xl mx-auto px-4 py-6 lg:py-10">
         <header className="mb-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -248,62 +242,53 @@ const defaultLoans = (): Loan[] => [
               Lånekalkylator & Strategi
             </h1>
             <p className="text-slate-400 text-sm mt-1 max-w-lg">
-              Lägg till dina lån, välj strategi och se direkt när du blir
-              skuldfri – och hur mycket ränta du sparar.
+              Bocka i extra månadsvis eller lägg engångs per lån – se direkt när
+              du blir skuldfri.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-2 rounded-xl">
-              <span className="text-xs text-slate-400">Start</span>
-              <input
-                type="month"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono font-bold text-teal-400"
-              />
-            </div>
+          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-2 rounded-xl">
+            <span className="text-xs text-slate-400">Start</span>
+            <input
+              type="month"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono font-bold text-teal-400"
+            />
           </div>
         </header>
 
-        <div className="mb-6 flex flex-col sm:flex-row gap-3">
-          <div className="flex-1 bg-slate-900 border border-slate-800 rounded-2xl p-3 flex flex-wrap gap-2 items-center">
-            <span className="text-[11px] text-slate-400 font-medium mr-1">
-              Strategi
-            </span>
-            {(
-              [
-                ["cascade", "Kaskad (din ordning)"],
-                ["avalanche", "Lavin (högst ränta)"],
-                ["snowball", "Snöboll (lägst skuld)"],
-              ] as [PayoffStrategy, string][]
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setStrategy(key)}
-                className={`text-xs px-3 py-1.5 rounded-lg border transition ${
-                  strategy === key
-                    ? "bg-teal-600/25 border-teal-500/50 text-teal-300 font-bold"
-                    : "bg-slate-950 border-slate-700 text-slate-400 hover:border-slate-500"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 flex items-center gap-3 min-w-[200px]">
-            <span className="text-[11px] text-slate-400 whitespace-nowrap">
-              Extra budget / mån
-            </span>
-            <NumField
-              value={globalExtra}
-              onChange={setGlobalExtra}
-              className="w-24 bg-slate-950 border border-amber-500/40 rounded-xl px-2 py-1.5 text-sm font-mono font-bold text-amber-300 text-center"
-            />
-          </div>
-        </div>        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8">
+        <div className="mb-6 bg-slate-900 border border-slate-800 rounded-2xl p-3 flex flex-wrap gap-2 items-center">
+          <span className="text-[11px] text-slate-400 font-medium mr-1">
+            Strategi
+          </span>
+          {(
+            [
+              ["cascade", "Kaskad (din ordning)"],
+              ["avalanche", "Lavin (högst ränta)"],
+              ["snowball", "Snöboll (lägst skuld)"],
+            ] as [PayoffStrategy, string][]
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setStrategy(key)}
+              className={`text-xs px-3 py-1.5 rounded-lg border transition ${
+                strategy === key
+                  ? "bg-teal-600/25 border-teal-500/50 text-teal-300 font-bold"
+                  : "bg-slate-950 border-slate-700 text-slate-400 hover:border-slate-500"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8">
           <section className="lg:col-span-5 space-y-4">
             {loans.map((loan, idx) => {
               const res = result.loanResults.find((r) => r.id === loan.id);
+              const totalPay =
+                loan.currentMonthlyPayment +
+                (loan.extraMonthlyEnabled ? loan.extraMonthly || 0 : 0);
               return (
                 <div
                   key={loan.id}
@@ -326,7 +311,6 @@ const defaultLoans = (): Loan[] => [
                         <button
                           onClick={() => removeLoan(loan.id)}
                           className="p-1 text-slate-600 hover:text-red-400"
-                          title="Ta bort lån"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -359,63 +343,92 @@ const defaultLoans = (): Loan[] => [
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[11px] text-slate-500 block mb-1">
-                        Min. bet/mån
-                      </label>
-                      <NumField
-                        value={loan.currentMonthlyPayment}
-                        onChange={(n) =>
-                          updateLoan(loan.id, { currentMonthlyPayment: n })
+                  <div>
+                    <label className="text-[11px] text-slate-500 block mb-1">
+                      Min. bet/mån
+                    </label>
+                    <NumField
+                      value={loan.currentMonthlyPayment}
+                      onChange={(n) =>
+                        updateLoan(loan.id, { currentMonthlyPayment: n })
+                      }
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-mono text-slate-200 outline-none focus:border-teal-500/50"
+                    />
+                  </div>
+
+                  <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 space-y-2">
+                    <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={!!loan.extraMonthlyEnabled}
+                        onChange={(e) =>
+                          updateLoan(loan.id, {
+                            extraMonthlyEnabled: e.target.checked,
+                            extraMonthlyFrom:
+                              loan.extraMonthlyFrom || startDate,
+                          })
                         }
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-mono text-slate-200 outline-none focus:border-teal-500/50"
+                        className="w-4 h-4 rounded accent-amber-400"
                       />
-                    </div>
-                    <div>
-                      <label className="text-[11px] text-amber-400/90 block mb-1">
-                        Extra / mån
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={0}
-                          max={5000}
-                          step={50}
-                          value={loan.extraMonthly ?? 0}
-                          onChange={(e) =>
-                            updateLoan(loan.id, {
-                              extraMonthly: Number(e.target.value),
-                            })
-                          }
-                          className="flex-1 accent-amber-400 h-1.5 min-w-0"
-                        />
-                        <NumField
-                          value={loan.extraMonthly ?? 0}
-                          onChange={(n) =>
-                            updateLoan(loan.id, { extraMonthly: n })
-                          }
-                          className="w-16 bg-slate-950 border border-amber-500/40 rounded-xl px-1 py-1.5 text-xs font-mono font-bold text-amber-300 text-center outline-none"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="text-[11px] text-slate-500">
-                    Betalar ca{" "}
-                    <span className="text-slate-300 font-mono">
-                      {topUpTo(loan).toLocaleString("sv-SE")}
-                    </span>{" "}
-                    kr/mån totalt
-                    {strategy === "cascade" && idx === 0 && (
-                      <span className="text-teal-500/80">
-                        {" "}
-                        · när detta är klart flyttas beloppet vidare
+                      <span className="text-xs font-semibold text-amber-300">
+                        Extra inbetalning månadsvis
                       </span>
+                    </label>
+                    {loan.extraMonthlyEnabled && (
+                      <div className="grid grid-cols-2 gap-2 pl-6">
+                        <div>
+                          <label className="text-[10px] text-slate-500 block mb-0.5">
+                            Belopp (kr)
+                          </label>
+                          <NumField
+                            value={loan.extraMonthly ?? 0}
+                            onChange={(n) =>
+                              updateLoan(loan.id, { extraMonthly: n })
+                            }
+                            className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-amber-300 text-center outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-500 block mb-0.5">
+                            Från datum
+                          </label>
+                          <input
+                            type="month"
+                            value={loan.extraMonthlyFrom || startDate}
+                            onChange={(e) =>
+                              updateLoan(loan.id, {
+                                extraMonthlyFrom: e.target.value,
+                              })
+                            }
+                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-teal-400"
+                          />
+                        </div>
+                      </div>
                     )}
+                    <div className="text-[10px] text-slate-500 pl-6">
+                      Totalt ca{" "}
+                      <span className="text-slate-300 font-mono">
+                        {totalPay.toLocaleString("sv-SE")}
+                      </span>{" "}
+                      kr/mån
+                      {strategy === "cascade" && idx === 0 && (
+                        <span className="text-teal-500/80">
+                          {" "}
+                          · flyttas vidare när klart
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="flex justify-between items-center text-[11px] font-mono pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => addOneTime(loan.id)}
+                    className="w-full text-[11px] py-2 rounded-xl bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 transition"
+                  >
+                    + Engångsbetalning på {loan.name}
+                  </button>
+
+                  <div className="flex justify-between items-center text-[11px] font-mono pt-1 border-t border-slate-800">
                     <span className="text-slate-500">
                       {res?.originalEndDate}{" "}
                       <ArrowRight className="inline w-3 h-3 text-slate-600" />{" "}
@@ -428,14 +441,14 @@ const defaultLoans = (): Loan[] => [
                   </div>
                 </div>
               );
-            })}
-
-            <button
+            })}            <button
               onClick={addLoan}
               className="w-full flex items-center justify-center gap-2 text-sm bg-slate-900 hover:bg-slate-800 border border-dashed border-slate-600 text-slate-300 py-3 rounded-2xl transition"
             >
               <Plus className="w-4 h-4" /> Lägg till lån
-            </button>            <div className="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden">
+            </button>
+
+            <div className="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden">
               <button
                 onClick={() => setShowOneTime(!showOneTime)}
                 className="w-full flex items-center justify-between p-4 text-left"
@@ -443,7 +456,7 @@ const defaultLoans = (): Loan[] => [
                 <div className="flex items-center gap-2">
                   <Calendar className="w-4 h-4 text-teal-400" />
                   <span className="text-sm font-bold text-white">
-                    Engångs (skatt m.m.)
+                    Engångsbetalningar
                   </span>
                   <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded-full">
                     {oneTimePayments.length}
@@ -458,19 +471,35 @@ const defaultLoans = (): Loan[] => [
               {showOneTime && (
                 <div className="px-4 pb-4 space-y-2">
                   {oneTimePayments.map((p) => (
-                    <div key={p.id} className="flex items-center gap-2">
+                    <div
+                      key={p.id}
+                      className="flex flex-wrap items-center gap-2"
+                    >
+                      <select
+                        value={p.loanId || ""}
+                        onChange={(e) =>
+                          updateOneTime(p.id, "loanId", e.target.value)
+                        }
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 max-w-[110px]"
+                      >
+                        {loans.map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.name}
+                          </option>
+                        ))}
+                      </select>
                       <input
                         type="month"
                         value={p.date}
                         onChange={(e) =>
                           updateOneTime(p.id, "date", e.target.value)
                         }
-                        className="bg-slate-950 border border-slate-700 rounded-xl px-2 py-1.5 text-xs font-mono text-slate-200 flex-1"
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-200"
                       />
                       <NumField
                         value={p.amount}
                         onChange={(n) => updateOneTime(p.id, "amount", n)}
-                        className="bg-slate-950 border border-slate-700 rounded-xl px-2 py-1.5 text-xs font-mono font-bold text-emerald-400 w-24 outline-none"
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-emerald-400 w-24 outline-none"
                       />
                       <button
                         onClick={() => removeOneTime(p.id)}
@@ -481,7 +510,7 @@ const defaultLoans = (): Loan[] => [
                     </div>
                   ))}
                   <button
-                    onClick={addOneTime}
+                    onClick={() => addOneTime()}
                     className="w-full flex items-center justify-center gap-1.5 text-xs bg-teal-600/15 hover:bg-teal-600/25 text-teal-300 border border-teal-500/20 py-2.5 rounded-xl transition"
                   >
                     <Plus className="w-3.5 h-3.5" /> Lägg till engångs
@@ -583,9 +612,8 @@ const defaultLoans = (): Loan[] => [
             </div>
 
             <p className="text-[11px] text-slate-600 text-center px-2">
-              Kaskad = din ordning uppifrån. När ett lån är klart går hela dess
-              betalning automatiskt till nästa. Lavin prioriterar högst ränta.
-              Snöboll lägst skuld.
+              Bocka i extra på varje lån och välj från-datum. Engångs har eget
+              datum och går till valt lån.
             </p>
           </section>
         </div>
