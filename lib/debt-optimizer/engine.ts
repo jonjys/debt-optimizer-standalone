@@ -1,144 +1,10 @@
-import { Loan, StrategyInput, CalculationResult, LoanResult, OneTimePayment } from "./types";
-
-export function calculateExcelStrategy(input: StrategyInput): CalculationResult {
-  const { loans, oneTimePayments = [], startDate } = input;
-
-  if (!loans || loans.length === 0) {
-    return emptyResult();
-  }
-
-  const sortedLoans = [...loans].sort((a, b) => a.balance - b.balance);
-
-  // 1. Original simulation
-  let maxOriginalMonths = 0;
-  let totalOrigInterest = 0;
-  const origResults: Record<string, { months: number; interest: number }> = {};
-
-  sortedLoans.forEach((loan) => {
-    let balance = loan.balance;
-    let months = 0;
-    let interestSum = 0;
-    const r = loan.interestRate / 12;
-
-    while (balance > 0.5 && months < 600) {
-      months++;
-      const interest = balance * r;
-      interestSum += interest;
-      balance += interest;
-      const pay = Math.min(balance, loan.currentMonthlyPayment);
-      balance -= pay;
-    }
-
-    origResults[loan.id] = { months, interest: Math.round(interestSum) };
-    if (months > maxOriginalMonths) maxOriginalMonths = months;
-    totalOrigInterest += interestSum;
-  });
-
-  // 2. Strategy simulation
-  let currentMonth = 0;
-  let maxNewMonths = 0;
-  let totalNewInterest = 0;
-
-  const active = sortedLoans.map((l) => ({
-    ...l,
-    currentBalance: l.balance,
-    totalInterestPaid: 0,
-    isPaidOff: false,
-    paidOffMonth: 0,
-  }));
-
-  const oneTimeMap = new Map<string, number>();
-  oneTimePayments.forEach((p) => {
-    if (p.amount > 0 && p.date) {
-      oneTimeMap.set(p.date, (oneTimeMap.get(p.date) || 0) + p.amount);
-    }
-  });
-
-  while (active.some((l) => !l.isPaidOff) && currentMonth < 600) {
-    currentMonth++;
-    const dateStr = getDateFromOffset(startDate, currentMonth - 1);
-
-    const firstPaidOff = active[0].isPaidOff;
-    const freedAmount = firstPaidOff
-      ? (active[0].targetMonthlyPayment || active[0].currentMonthlyPayment)
-      : 0;
-
-    for (let i = 0; i < active.length; i++) {
-      const loan = active[i];
-      if (loan.isPaidOff) continue;
-
-      const r = loan.interestRate / 12;
-      const interest = loan.currentBalance * r;
-      loan.totalInterestPaid += interest;
-      loan.currentBalance += interest;
-
-      let payment = loan.currentMonthlyPayment;
-
-      if (i === 0 && loan.targetMonthlyPayment && loan.targetMonthlyPayment > payment) {
-        payment = loan.targetMonthlyPayment;
-      }
-
-      if (loan.extraPaymentFromStart) {
-        payment += loan.extraPaymentFromStart;
-      }
-
-      if (i > 0 && firstPaidOff) {
-        payment += freedAmount;
-        if (loan.extraPaymentAfterFreed) {
-          payment += loan.extraPaymentAfterFreed;
-        }
-      }
-
-      if (i === 0 || active.slice(0, i).every((l) => l.isPaidOff)) {
-        const ot = oneTimeMap.get(dateStr) || 0;
-        if (ot > 0) {
-          payment += ot;
-          oneTimeMap.delete(dateStr);
-        }
-      }
-
-      const actual = Math.min(loan.currentBalance, payment);
-      loan.currentBalance -= actual;
-
-      if (loan.currentBalance <= 0.5) {
-        loan.currentBalance = 0;
-        loan.isPaidOff = true;
-        loan.paidOffMonth = currentMonth;
-      }
-    }
-  }
-
-  const loanResults: LoanResult[] = sortedLoans.map((l) => {
-    const orig = origResults[l.id];
-    const sim = active.find((a) => a.id === l.id)!;
-    const newMonths = sim.paidOffMonth || 0;
-    const newInterest = Math.round(sim.totalInterestPaid);
-
-    if (newMonths > maxNewMonths) maxNewMonths = newMonths;
-    totalNewInterest += sim.totalInterestPaid;
-
-    return {
-      id: l.id,
-      name: l.name,
-      originalEndDate: getDateFromOffset(startDate, orig.months),
-      originalTotalInterest: orig.interest,
-      newEndDate: getDateFromOffset(startDate, newMonths),
-      newTotalInterest: newInterest,
-      interestSaved: Math.max(0, orig.interest - newInterest),
-      monthsSaved: Math.max(0, orig.months - newMonths),
-    };
-  });
-
-  return {
-    totalOriginalInterest: Math.round(totalOrigInterest),
-    totalNewInterest: Math.round(totalNewInterest),
-    totalInterestSaved: Math.round(Math.max(0, totalOrigInterest - totalNewInterest)),
-    originalFreedomDate: getDateFromOffset(startDate, maxOriginalMonths),
-    newFreedomDate: getDateFromOffset(startDate, maxNewMonths),
-    totalMonthsSaved: Math.max(0, maxOriginalMonths - maxNewMonths),
-    loanResults,
-  };
-}
+import {
+  Loan,
+  StrategyInput,
+  CalculationResult,
+  LoanResult,
+  PayoffStrategy,
+} from "./types";
 
 function getDateFromOffset(startYearMonth: string, monthOffset: number): string {
   const [yearStr, monthStr] = startYearMonth.split("-");
@@ -157,6 +23,180 @@ function emptyResult(): CalculationResult {
     originalFreedomDate: "-",
     newFreedomDate: "-",
     totalMonthsSaved: 0,
+    firstDebtPaidDate: "-",
     loanResults: [],
+  };
+}
+
+function sortLoans(loans: Loan[], strategy: PayoffStrategy): Loan[] {
+  const copy = [...loans];
+  if (strategy === "avalanche") {
+    return copy.sort((a, b) => b.interestRate - a.interestRate);
+  }
+  if (strategy === "snowball") {
+    return copy.sort((a, b) => a.balance - b.balance);
+  }
+  // cascade = user order (as given)
+  return copy;
+}
+
+export function calculateExcelStrategy(input: StrategyInput): CalculationResult {
+  const {
+    loans,
+    oneTimePayments = [],
+    startDate,
+    strategy = "cascade",
+    globalExtraMonthly = 0,
+  } = input;
+
+  if (!loans || loans.length === 0) return emptyResult();
+
+  // Original (no extras, no cascade)
+  let maxOriginalMonths = 0;
+  let totalOrigInterest = 0;
+  const origResults: Record<string, { months: number; interest: number }> = {};
+
+  loans.forEach((loan) => {
+    let balance = loan.balance;
+    let months = 0;
+    let interestSum = 0;
+    const r = loan.interestRate / 12;
+    while (balance > 0.5 && months < 600) {
+      months++;
+      const interest = balance * r;
+      interestSum += interest;
+      balance += interest;
+      balance -= Math.min(balance, loan.currentMonthlyPayment);
+    }
+    origResults[loan.id] = { months, interest: Math.round(interestSum) };
+    if (months > maxOriginalMonths) maxOriginalMonths = months;
+    totalOrigInterest += interestSum;
+  });
+
+  // Strategy order
+  const ordered = sortLoans(loans, strategy);
+
+  type Active = Loan & {
+    currentBalance: number;
+    totalInterestPaid: number;
+    isPaidOff: boolean;
+    paidOffMonth: number;
+  };
+
+  const active: Active[] = ordered.map((l) => ({
+    ...l,
+    currentBalance: l.balance,
+    totalInterestPaid: 0,
+    isPaidOff: false,
+    paidOffMonth: 0,
+  }));
+
+  const oneTimeMap = new Map<string, { amount: number; loanId?: string }[]>();
+  oneTimePayments.forEach((p) => {
+    if (p.amount > 0 && p.date) {
+      const list = oneTimeMap.get(p.date) || [];
+      list.push({ amount: p.amount, loanId: p.loanId });
+      oneTimeMap.set(p.date, list);
+    }
+  });
+
+  let currentMonth = 0;
+  let maxNewMonths = 0;
+  let totalNewInterest = 0;
+  let firstPaidMonth = 0;
+
+  while (active.some((l) => !l.isPaidOff) && currentMonth < 600) {
+    currentMonth++;
+    const dateStr = getDateFromOffset(startDate, currentMonth - 1);
+
+    // Freed payment from paid-off loans (cascade / snowball roll)
+    let freedPool = 0;
+    active.forEach((l) => {
+      if (l.isPaidOff) {
+        freedPool += l.currentMonthlyPayment + (l.extraMonthly || 0);
+      }
+    });
+
+    // Find first unpaid (priority target for global extra + cascade)
+    const priorityIdx = active.findIndex((l) => !l.isPaidOff);
+
+    for (let i = 0; i < active.length; i++) {
+      const loan = active[i];
+      if (loan.isPaidOff) continue;
+
+      const r = loan.interestRate / 12;
+      const interest = loan.currentBalance * r;
+      loan.totalInterestPaid += interest;
+      loan.currentBalance += interest;
+
+      let payment = loan.currentMonthlyPayment + (loan.extraMonthly || 0);
+
+      // Cascade / roll: all freed mins go to current priority loan
+      if (i === priorityIdx && freedPool > 0) {
+        payment += freedPool;
+      }
+
+      // Global extra always on priority
+      if (i === priorityIdx && globalExtraMonthly > 0) {
+        payment += globalExtraMonthly;
+      }
+
+      // One-time this month
+      const ots = oneTimeMap.get(dateStr);
+      if (ots) {
+        for (const ot of ots) {
+          if (!ot.loanId || ot.loanId === loan.id) {
+            if (ot.loanId === loan.id || (!ot.loanId && i === priorityIdx)) {
+              payment += ot.amount;
+            }
+          }
+        }
+        if (i === priorityIdx) oneTimeMap.delete(dateStr);
+      }
+
+      const actual = Math.min(loan.currentBalance, payment);
+      loan.currentBalance -= actual;
+
+      if (loan.currentBalance <= 0.5) {
+        loan.currentBalance = 0;
+        loan.isPaidOff = true;
+        loan.paidOffMonth = currentMonth;
+        if (!firstPaidMonth) firstPaidMonth = currentMonth;
+      }
+    }
+  }
+
+  const loanResults: LoanResult[] = ordered.map((l, orderIdx) => {
+    const orig = origResults[l.id];
+    const sim = active.find((a) => a.id === l.id)!;
+    const newMonths = sim.paidOffMonth || 0;
+    const newInterest = Math.round(sim.totalInterestPaid);
+    if (newMonths > maxNewMonths) maxNewMonths = newMonths;
+    totalNewInterest += sim.totalInterestPaid;
+
+    return {
+      id: l.id,
+      name: l.name,
+      originalEndDate: getDateFromOffset(startDate, orig.months),
+      originalTotalInterest: orig.interest,
+      newEndDate: getDateFromOffset(startDate, newMonths),
+      newTotalInterest: newInterest,
+      interestSaved: Math.max(0, orig.interest - newInterest),
+      monthsSaved: Math.max(0, orig.months - newMonths),
+      payoffOrder: orderIdx + 1,
+    };
+  });
+
+  return {
+    totalOriginalInterest: Math.round(totalOrigInterest),
+    totalNewInterest: Math.round(totalNewInterest),
+    totalInterestSaved: Math.round(Math.max(0, totalOrigInterest - totalNewInterest)),
+    originalFreedomDate: getDateFromOffset(startDate, maxOriginalMonths),
+    newFreedomDate: getDateFromOffset(startDate, maxNewMonths),
+    totalMonthsSaved: Math.max(0, maxOriginalMonths - maxNewMonths),
+    firstDebtPaidDate: firstPaidMonth
+      ? getDateFromOffset(startDate, firstPaidMonth)
+      : "-",
+    loanResults,
   };
 }
