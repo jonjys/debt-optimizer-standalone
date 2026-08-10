@@ -40,15 +40,6 @@ function sortLoans(loans: Loan[], strategy: PayoffStrategy): Loan[] {
   return copy;
 }
 
-function basePayment(loan: Loan, balance: number): number {
-  const r = loan.interestRate / 12;
-  const interest = balance * r;
-  if (loan.paymentStyle === "fixed_amort") {
-    return Math.min(balance + interest, loan.currentMonthlyPayment + interest);
-  }
-  return Math.min(balance + interest, loan.currentMonthlyPayment);
-}
-
 function monthPayment(
   loan: Loan,
   balance: number,
@@ -71,6 +62,7 @@ function monthPayment(
     return { payment: Math.min(balance + interest, total), interest };
   }
 
+  // Annuity: min + optional own extra + optional cascade extra (independent)
   let total = loan.currentMonthlyPayment;
   if (
     loan.extraMonthlyEnabled &&
@@ -79,20 +71,14 @@ function monthPayment(
   ) {
     total += loan.extraMonthly || 0;
   }
-  return { payment: Math.min(balance + interest, total), interest };
-}
-
-function freedAmount(loan: Loan): number {
-  if (loan.paymentStyle === "fixed_amort") {
-    if (loan.targetMonthlyEnabled && loan.targetMonthlyTotal) {
-      return loan.targetMonthlyTotal;
-    }
-    return loan.currentMonthlyPayment;
+  if (
+    loan.cascadeExtraEnabled &&
+    (loan.cascadeExtraAmount || 0) > 0 &&
+    dateGte(dateStr, loan.cascadeExtraFrom || startDate)
+  ) {
+    total += loan.cascadeExtraAmount || 0;
   }
-  return (
-    loan.currentMonthlyPayment +
-    (loan.extraMonthlyEnabled ? loan.extraMonthly || 0 : 0)
-  );
+  return { payment: Math.min(balance + interest, total), interest };
 }
 
 export function calculateExcelStrategy(input: StrategyInput): CalculationResult {
@@ -166,12 +152,6 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
   while (active.some((l) => !l.isPaidOff) && currentMonth < 600) {
     currentMonth++;
     const dateStr = getDateFromOffset(startDate, currentMonth - 1);
-
-    let freedPool = 0;
-    active.forEach((l) => {
-      if (l.isPaidOff) freedPool += freedAmount(l);
-    });
-
     const priorityIdx = active.findIndex((l) => !l.isPaidOff);
 
     for (let i = 0; i < active.length; i++) {
@@ -188,7 +168,6 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
       loan.currentBalance += interest;
 
       let payment = basePay;
-      if (i === priorityIdx && freedPool > 0) payment += freedPool;
 
       const ots = oneTimeMap.get(dateStr);
       if (ots) {
