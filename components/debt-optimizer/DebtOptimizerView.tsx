@@ -127,22 +127,24 @@ const defaultLoans = (): Loan[] => [
     id: "nordea",
     name: "Nordea",
     loanType: "Rak amortering",
+    paymentStyle: "fixed_amort",
     balance: 112455,
     interestRate: 0.0595,
     currentMonthlyPayment: 1389,
-    extraMonthly: 611,
-    extraMonthlyEnabled: true,
-    extraMonthlyFrom: "2026-08",
+    targetMonthlyTotal: 2000,
+    targetMonthlyEnabled: true,
+    targetMonthlyFrom: "2026-08",
   },
   {
     id: "nordax",
     name: "Nordax",
     loanType: "Annuitet",
+    paymentStyle: "annuity",
     balance: 589111,
     interestRate: 0.0909,
     currentMonthlyPayment: 6888,
     extraMonthly: 500,
-    extraMonthlyEnabled: true,
+    extraMonthlyEnabled: false,
     extraMonthlyFrom: "2026-08",
   },
 ];
@@ -190,6 +192,7 @@ export function DebtOptimizerView() {
         id,
         name: `Lån ${prev.length + 1}`,
         loanType: "Annuitet",
+        paymentStyle: "annuity",
         balance: 50000,
         interestRate: 0.08,
         currentMonthlyPayment: 1000,
@@ -242,8 +245,8 @@ export function DebtOptimizerView() {
               Lånekalkylator & Strategi
             </h1>
             <p className="text-slate-400 text-sm mt-1 max-w-lg">
-              Bocka i extra månadsvis eller lägg engångs per lån – se direkt när
-              du blir skuldfri.
+              Nordea: toppa upp till fast totalsumma. Nordax: extra ovanpå
+              annuitet. Engångs per lån.
             </p>
           </div>
           <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-2 rounded-xl">
@@ -286,9 +289,7 @@ export function DebtOptimizerView() {
           <section className="lg:col-span-5 space-y-4">
             {loans.map((loan, idx) => {
               const res = result.loanResults.find((r) => r.id === loan.id);
-              const totalPay =
-                loan.currentMonthlyPayment +
-                (loan.extraMonthlyEnabled ? loan.extraMonthly || 0 : 0);
+              const isFixed = loan.paymentStyle === "fixed_amort";
               return (
                 <div
                   key={loan.id}
@@ -304,6 +305,9 @@ export function DebtOptimizerView() {
                       className="bg-transparent font-bold text-white text-sm border-b border-transparent hover:border-slate-600 focus:border-teal-500 outline-none flex-1 min-w-0"
                     />
                     <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] text-slate-500">
+                        {isFixed ? "fast amort" : "annuitet"}
+                      </span>
                       <span className="text-xs font-mono text-teal-400">
                         {res?.newEndDate ?? "—"}
                       </span>
@@ -345,7 +349,7 @@ export function DebtOptimizerView() {
 
                   <div>
                     <label className="text-[11px] text-slate-500 block mb-1">
-                      Min. bet/mån
+                      {isFixed ? "Fast amortering / mån" : "Min. total / mån"}
                     </label>
                     <NumField
                       value={loan.currentMonthlyPayment}
@@ -354,71 +358,139 @@ export function DebtOptimizerView() {
                       }
                       className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-mono text-slate-200 outline-none focus:border-teal-500/50"
                     />
+                    {isFixed && (
+                      <p className="text-[10px] text-slate-600 mt-1">
+                        + ränta varje månad (t.ex. 1389 + 568 = 1957 i aug)
+                      </p>
+                    )}
                   </div>
 
-                  <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 space-y-2">
-                    <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={!!loan.extraMonthlyEnabled}
-                        onChange={(e) =>
-                          updateLoan(loan.id, {
-                            extraMonthlyEnabled: e.target.checked,
-                            extraMonthlyFrom:
-                              loan.extraMonthlyFrom || startDate,
-                          })
-                        }
-                        className="w-4 h-4 rounded accent-amber-400"
-                      />
-                      <span className="text-xs font-semibold text-amber-300">
-                        Extra inbetalning månadsvis
-                      </span>
-                    </label>
-                    {loan.extraMonthlyEnabled && (
-                      <div className="grid grid-cols-2 gap-2 pl-6">
-                        <div>
-                          <label className="text-[10px] text-slate-500 block mb-0.5">
-                            Belopp (kr)
-                          </label>
-                          <NumField
-                            value={loan.extraMonthly ?? 0}
-                            onChange={(n) =>
-                              updateLoan(loan.id, { extraMonthly: n })
-                            }
-                            className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-amber-300 text-center outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] text-slate-500 block mb-0.5">
-                            Från datum
-                          </label>
-                          <input
-                            type="month"
-                            value={loan.extraMonthlyFrom || startDate}
-                            onChange={(e) =>
-                              updateLoan(loan.id, {
-                                extraMonthlyFrom: e.target.value,
-                              })
-                            }
-                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-teal-400"
-                          />
-                        </div>
-                      </div>
-                    )}
-                    <div className="text-[10px] text-slate-500 pl-6">
-                      Totalt ca{" "}
-                      <span className="text-slate-300 font-mono">
-                        {totalPay.toLocaleString("sv-SE")}
-                      </span>{" "}
-                      kr/mån
-                      {strategy === "cascade" && idx === 0 && (
-                        <span className="text-teal-500/80">
-                          {" "}
-                          · flyttas vidare när klart
+                  {isFixed && (
+                    <div className="bg-slate-950/70 border border-amber-500/30 rounded-xl p-3 space-y-2">
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={!!loan.targetMonthlyEnabled}
+                          onChange={(e) =>
+                            updateLoan(loan.id, {
+                              targetMonthlyEnabled: e.target.checked,
+                              targetMonthlyFrom:
+                                loan.targetMonthlyFrom || startDate,
+                            })
+                          }
+                          className="w-4 h-4 rounded accent-amber-400"
+                        />
+                        <span className="text-xs font-semibold text-amber-300">
+                          Toppa upp till fast totalsumma
                         </span>
+                      </label>
+                      {loan.targetMonthlyEnabled && (
+                        <div className="grid grid-cols-2 gap-2 pl-6">
+                          <div>
+                            <label className="text-[10px] text-slate-500 block mb-0.5">
+                              Totalt kr/mån
+                            </label>
+                            <NumField
+                              value={loan.targetMonthlyTotal ?? 2000}
+                              onChange={(n) =>
+                                updateLoan(loan.id, {
+                                  targetMonthlyTotal: n,
+                                })
+                              }
+                              className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-amber-300 text-center outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-slate-500 block mb-0.5">
+                              Från datum
+                            </label>
+                            <input
+                              type="month"
+                              value={loan.targetMonthlyFrom || startDate}
+                              onChange={(e) =>
+                                updateLoan(loan.id, {
+                                  targetMonthlyFrom: e.target.value,
+                                })
+                              }
+                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-teal-400"
+                            />
+                          </div>
+                        </div>
                       )}
+                      <p className="text-[10px] text-slate-500 pl-6">
+                        Betalar alltid{" "}
+                        {loan.targetMonthlyEnabled
+                          ? (loan.targetMonthlyTotal ?? 2000).toLocaleString(
+                              "sv-SE"
+                            )
+                          : "amort + ränta"}{" "}
+                        kr. När räntan sjunker går mer till amortering.
+                      </p>
                     </div>
-                  </div>
+                  )}
+
+                  {!isFixed && (
+                    <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 space-y-2">
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={!!loan.extraMonthlyEnabled}
+                          onChange={(e) =>
+                            updateLoan(loan.id, {
+                              extraMonthlyEnabled: e.target.checked,
+                              extraMonthlyFrom:
+                                loan.extraMonthlyFrom || startDate,
+                            })
+                          }
+                          className="w-4 h-4 rounded accent-amber-400"
+                        />
+                        <span className="text-xs font-semibold text-amber-300">
+                          Extra inbetalning månadsvis
+                        </span>
+                      </label>
+                      {loan.extraMonthlyEnabled && (
+                        <div className="grid grid-cols-2 gap-2 pl-6">
+                          <div>
+                            <label className="text-[10px] text-slate-500 block mb-0.5">
+                              Extra (kr)
+                            </label>
+                            <NumField
+                              value={loan.extraMonthly ?? 0}
+                              onChange={(n) =>
+                                updateLoan(loan.id, { extraMonthly: n })
+                              }
+                              className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-amber-300 text-center outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-slate-500 block mb-0.5">
+                              Från datum
+                            </label>
+                            <input
+                              type="month"
+                              value={loan.extraMonthlyFrom || startDate}
+                              onChange={(e) =>
+                                updateLoan(loan.id, {
+                                  extraMonthlyFrom: e.target.value,
+                                })
+                              }
+                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-teal-400"
+                            />
+                          </div>
+                        </div>
+                      )}
+                      <p className="text-[10px] text-slate-500 pl-6">
+                        Totalt ca{" "}
+                        {(
+                          loan.currentMonthlyPayment +
+                          (loan.extraMonthlyEnabled
+                            ? loan.extraMonthly || 0
+                            : 0)
+                        ).toLocaleString("sv-SE")}{" "}
+                        kr/mån
+                      </p>
+                    </div>
+                  )}
 
                   <button
                     type="button"
@@ -610,11 +682,6 @@ export function DebtOptimizerView() {
                   ))}
               </div>
             </div>
-
-            <p className="text-[11px] text-slate-600 text-center px-2">
-              Bocka i extra på varje lån och välj från-datum. Engångs har eget
-              datum och går till valt lån.
-            </p>
           </section>
         </div>
       </div>
