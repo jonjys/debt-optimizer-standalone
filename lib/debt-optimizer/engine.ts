@@ -15,6 +15,11 @@ function getDateFromOffset(startYearMonth: string, monthOffset: number): string 
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
+function dateGte(a: string, b: string): boolean {
+  if (!b) return true;
+  return a >= b;
+}
+
 function emptyResult(): CalculationResult {
   return {
     totalOriginalInterest: 0,
@@ -30,14 +35,16 @@ function emptyResult(): CalculationResult {
 
 function sortLoans(loans: Loan[], strategy: PayoffStrategy): Loan[] {
   const copy = [...loans];
-  if (strategy === "avalanche") {
-    return copy.sort((a, b) => b.interestRate - a.interestRate);
-  }
-  if (strategy === "snowball") {
-    return copy.sort((a, b) => a.balance - b.balance);
-  }
-  // cascade = user order (as given)
+  if (strategy === "avalanche") return copy.sort((a, b) => b.interestRate - a.interestRate);
+  if (strategy === "snowball") return copy.sort((a, b) => a.balance - b.balance);
   return copy;
+}
+
+function loanExtraThisMonth(loan: Loan, dateStr: string, startDate: string): number {
+  if (!loan.extraMonthlyEnabled) return 0;
+  const from = loan.extraMonthlyFrom || startDate;
+  if (!dateGte(dateStr, from)) return 0;
+  return loan.extraMonthly || 0;
 }
 
 export function calculateExcelStrategy(input: StrategyInput): CalculationResult {
@@ -47,11 +54,12 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
     startDate,
     strategy = "cascade",
     globalExtraMonthly = 0,
+    globalExtraTarget = "priority",
+    globalExtraFromDate = "",
   } = input;
 
   if (!loans || loans.length === 0) return emptyResult();
 
-  // Original (no extras, no cascade)
   let maxOriginalMonths = 0;
   let totalOrigInterest = 0;
   const origResults: Record<string, { months: number; interest: number }> = {};
@@ -73,7 +81,6 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
     totalOrigInterest += interestSum;
   });
 
-  // Strategy order
   const ordered = sortLoans(loans, strategy);
 
   type Active = Loan & {
@@ -109,16 +116,26 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
     currentMonth++;
     const dateStr = getDateFromOffset(startDate, currentMonth - 1);
 
-    // Freed payment from paid-off loans (cascade / snowball roll)
     let freedPool = 0;
     active.forEach((l) => {
       if (l.isPaidOff) {
-        freedPool += l.currentMonthlyPayment + (l.extraMonthly || 0);
+        freedPool += l.currentMonthlyPayment + (l.extraMonthlyEnabled ? (l.extraMonthly || 0) : 0);
       }
     });
 
-    // Find first unpaid (priority target for global extra + cascade)
     const priorityIdx = active.findIndex((l) => !l.isPaidOff);
+
+    const extraActive =
+      globalExtraMonthly > 0 && dateGte(dateStr, globalExtraFromDate || startDate);
+    let extraTargetIdx = -1;
+    if (extraActive) {
+      if (globalExtraTarget === "priority" || !globalExtraTarget) {
+        extraTargetIdx = priorityIdx;
+      } else {
+        const idx = active.findIndex((l) => l.id === globalExtraTarget && !l.isPaidOff);
+        extraTargetIdx = idx >= 0 ? idx : priorityIdx;
+      }
+    }
 
     for (let i = 0; i < active.length; i++) {
       const loan = active[i];
@@ -129,26 +146,17 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
       loan.totalInterestPaid += interest;
       loan.currentBalance += interest;
 
-      let payment = loan.currentMonthlyPayment + (loan.extraMonthly || 0);
+      let payment =
+        loan.currentMonthlyPayment + loanExtraThisMonth(loan, dateStr, startDate);
 
-      // Cascade / roll: all freed mins go to current priority loan
-      if (i === priorityIdx && freedPool > 0) {
-        payment += freedPool;
-      }
+      if (i === priorityIdx && freedPool > 0) payment += freedPool;
+      if (i === extraTargetIdx && extraActive) payment += globalExtraMonthly;
 
-      // Global extra always on priority
-      if (i === priorityIdx && globalExtraMonthly > 0) {
-        payment += globalExtraMonthly;
-      }
-
-      // One-time this month
       const ots = oneTimeMap.get(dateStr);
       if (ots) {
         for (const ot of ots) {
-          if (!ot.loanId || ot.loanId === loan.id) {
-            if (ot.loanId === loan.id || (!ot.loanId && i === priorityIdx)) {
-              payment += ot.amount;
-            }
+          if (ot.loanId === loan.id || (!ot.loanId && i === priorityIdx)) {
+            payment += ot.amount;
           }
         }
         if (i === priorityIdx) oneTimeMap.delete(dateStr);
@@ -173,7 +181,6 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
     const newInterest = Math.round(sim.totalInterestPaid);
     if (newMonths > maxNewMonths) maxNewMonths = newMonths;
     totalNewInterest += sim.totalInterestPaid;
-
     return {
       id: l.id,
       name: l.name,
