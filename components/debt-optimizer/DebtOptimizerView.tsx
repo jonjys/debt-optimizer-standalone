@@ -143,9 +143,11 @@ const defaultLoans = (): Loan[] => [
     balance: 589111,
     interestRate: 0.0909,
     currentMonthlyPayment: 6888,
-    extraMonthly: 500,
+    extraMonthly: 0,
     extraMonthlyEnabled: false,
     extraMonthlyFrom: "2026-08",
+    cascadeExtraEnabled: false,
+    cascadeExtraAmount: 2000,
   },
 ];
 
@@ -485,65 +487,80 @@ export function DebtOptimizerView() {
                           loan.currentMonthlyPayment +
                           (loan.extraMonthlyEnabled
                             ? loan.extraMonthly || 0
+                            : 0) +
+                          (loan.cascadeExtraEnabled
+                            ? loan.cascadeExtraAmount || 0
                             : 0)
                         ).toLocaleString("sv-SE")}{" "}
-                        kr/mån
+                        kr/mån (inkl. kaskad om aktiv)
                       </p>
                     </div>
                   )}
 
                   {idx > 0 && strategy === "cascade" && (() => {
                     const prev = loans[idx - 1];
-                    const prevRes = result.loanResults.find((r) => r.id === prev.id);
+                    const prevRes = result.loanResults.find(
+                      (r) => r.id === prev.id
+                    );
                     const prevDate = prevRes?.newEndDate || "—";
                     const prevTotal =
-                      prev.paymentStyle === "fixed_amort" && prev.targetMonthlyEnabled
+                      prev.paymentStyle === "fixed_amort" &&
+                      prev.targetMonthlyEnabled
                         ? prev.targetMonthlyTotal || prev.currentMonthlyPayment
                         : prev.currentMonthlyPayment +
-                          (prev.extraMonthlyEnabled ? prev.extraMonthly || 0 : 0);
-                    const isOn =
-                      !!loan.extraMonthlyEnabled &&
-                      (loan.extraMonthlyFrom || "") === prevDate;
+                          (prev.extraMonthlyEnabled
+                            ? prev.extraMonthly || 0
+                            : 0);
                     return (
                       <div className="bg-teal-950/40 border border-teal-500/30 rounded-xl p-3 space-y-2">
                         <label className="flex items-start gap-2.5 cursor-pointer select-none">
                           <input
                             type="checkbox"
-                            checked={isOn || (!!loan.extraMonthlyEnabled && (loan.extraMonthlyFrom || "") >= (prevDate !== "—" ? prevDate : ""))}
+                            checked={!!loan.cascadeExtraEnabled}
                             onChange={(e) => {
                               if (e.target.checked) {
                                 updateLoan(loan.id, {
-                                  extraMonthlyEnabled: true,
-                                  extraMonthly: prevTotal,
-                                  extraMonthlyFrom: prevDate !== "—" ? prevDate : startDate,
+                                  cascadeExtraEnabled: true,
+                                  cascadeExtraAmount:
+                                    loan.cascadeExtraAmount &&
+                                    loan.cascadeExtraAmount > 0
+                                      ? loan.cascadeExtraAmount
+                                      : prevTotal,
+                                  cascadeExtraFrom:
+                                    prevDate !== "—" ? prevDate : startDate,
                                 });
                               } else {
                                 updateLoan(loan.id, {
-                                  extraMonthlyEnabled: false,
+                                  cascadeExtraEnabled: false,
                                 });
                               }
                             }}
                             className="w-4 h-4 mt-0.5 rounded accent-teal-400"
                           />
                           <span className="text-xs text-teal-200 leading-snug">
-                            När <span className="font-bold text-white">{prev.name}</span> är
-                            avbetalt (
-                            <span className="font-mono text-teal-300">{prevDate}</span>
+                            När{" "}
+                            <span className="font-bold text-white">
+                              {prev.name}
+                            </span>{" "}
+                            är avbetalt (
+                            <span className="font-mono text-teal-300">
+                              {prevDate}
+                            </span>
                             ): börja betala extra
                           </span>
                         </label>
-                        {(isOn || loan.extraMonthlyEnabled) && (
+                        {loan.cascadeExtraEnabled && (
                           <div className="grid grid-cols-2 gap-2 pl-6">
                             <div>
                               <label className="text-[10px] text-slate-500 block mb-0.5">
                                 Extra kr/mån
                               </label>
                               <NumField
-                                value={loan.extraMonthly ?? prevTotal}
+                                value={loan.cascadeExtraAmount ?? prevTotal}
                                 onChange={(n) =>
                                   updateLoan(loan.id, {
-                                    extraMonthly: n,
-                                    extraMonthlyEnabled: true,
+                                    cascadeExtraAmount: n,
+                                    cascadeExtraEnabled: true,
                                   })
                                 }
                                 className="w-full bg-slate-950 border border-teal-500/40 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-teal-300 text-center outline-none"
@@ -555,11 +572,14 @@ export function DebtOptimizerView() {
                               </label>
                               <input
                                 type="month"
-                                value={loan.extraMonthlyFrom || (prevDate !== "—" ? prevDate : startDate)}
+                                value={
+                                  loan.cascadeExtraFrom ||
+                                  (prevDate !== "—" ? prevDate : startDate)
+                                }
                                 onChange={(e) =>
                                   updateLoan(loan.id, {
-                                    extraMonthlyFrom: e.target.value,
-                                    extraMonthlyEnabled: true,
+                                    cascadeExtraFrom: e.target.value,
+                                    cascadeExtraEnabled: true,
                                   })
                                 }
                                 className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-teal-400"
@@ -568,8 +588,9 @@ export function DebtOptimizerView() {
                           </div>
                         )}
                         <p className="text-[10px] text-slate-500 pl-6">
-                          Förvalt = samma som {prev.name}s totalsumma (
-                          {prevTotal.toLocaleString("sv-SE")} kr). Du kan ändra.
+                          Oberoende av Extra månadsvis ovan. Förvalt{" "}
+                          {prevTotal.toLocaleString("sv-SE")} kr (= {prev.name}
+                          ).
                         </p>
                       </div>
                     );
