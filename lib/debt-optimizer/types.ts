@@ -5,29 +5,32 @@ export interface Loan {
   name: string;
   loanType: "Rak amortering" | "Annuitet";
   balance: number;
-  interestRate: number; // decimal e.g. 0.0595
+  interestRate: number;
   currentMonthlyPayment: number;
-  /** Toppa upp / extra varje månad på just detta lån (utöver min) */
+  /** Extra varje månad (utöver min) */
   extraMonthly?: number;
-  /** Om true: när föregående lån i ordningen är klart, läggs dess hela betalning hit */
-  receiveCascade?: boolean;
+  /** true = extra-månadsbetalning aktiv */
+  extraMonthlyEnabled?: boolean;
+  /** Från vilken månad extra gäller (YYYY-MM). Tom = från startDate */
+  extraMonthlyFrom?: string;
 }
 
 export interface OneTimePayment {
   id: string;
   date: string; // YYYY-MM
   amount: number;
-  /** optional: target loan id, otherwise first active in order */
+  /** vilket lån — krävs för tydlighet */
   loanId?: string;
 }
 
 export interface StrategyInput {
   loans: Loan[];
   oneTimePayments: OneTimePayment[];
-  startDate: string; // YYYY-MM
+  startDate: string;
   strategy: PayoffStrategy;
-  /** Global extra budget som alltid går till prioritets-lånet */
   globalExtraMonthly?: number;
+  globalExtraTarget?: "priority" | string;
+  globalExtraFromDate?: string;
 }
 
 export interface LoanResult {
