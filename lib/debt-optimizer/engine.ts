@@ -35,12 +35,32 @@ function emptyResult(): CalculationResult {
 
 function sortLoans(loans: Loan[], strategy: PayoffStrategy): Loan[] {
   const copy = [...loans];
-  if (strategy === "avalanche") return copy.sort((a, b) => b.interestRate - a.interestRate);
-  if (strategy === "snowball") return copy.sort((a, b) => a.balance - b.balance);
-  return copy;
+  if (strategy === "avalanche")
+    return copy.sort((a, b) => b.interestRate - a.interestRate);
+  if (strategy === "snowball")
+    return copy.sort((a, b) => a.balance - b.balance);
+  return copy; // cascade = user's own order
 }
 
-function monthPayment(
+/**
+ * Monthly cash "freed" once this loan is paid off, in every strategy — the
+ * base amount that was going toward it (its own extra included, but not any
+ * cascade pool it may itself have received while active, or that would
+ * double-count as it rolls forward loan by loan).
+ */
+function freedWhenPaid(loan: Loan): number {
+  if (loan.paymentStyle === "fixed_amort") {
+    if (loan.targetMonthlyEnabled && loan.targetMonthlyTotal)
+      return loan.targetMonthlyTotal;
+    return loan.currentMonthlyPayment; // approx (amort only; interest varies)
+  }
+  return (
+    loan.currentMonthlyPayment +
+    (loan.extraMonthlyEnabled ? loan.extraMonthly || 0 : 0)
+  );
+}
+
+function monthBasePayment(
   loan: Loan,
   balance: number,
   dateStr: string,
@@ -54,15 +74,23 @@ function monthPayment(
     let total = scheduled;
     if (
       loan.targetMonthlyEnabled &&
-      loan.targetMonthlyTotal &&
+      (loan.targetMonthlyTotal || 0) > 0 &&
       dateGte(dateStr, loan.targetMonthlyFrom || startDate)
     ) {
-      total = Math.max(scheduled, loan.targetMonthlyTotal);
+      total = Math.max(scheduled, loan.targetMonthlyTotal!);
+    }
+    // + optional extra on top of target/scheduled
+    if (
+      loan.extraMonthlyEnabled &&
+      (loan.extraMonthly || 0) > 0 &&
+      dateGte(dateStr, loan.extraMonthlyFrom || startDate)
+    ) {
+      total += loan.extraMonthly || 0;
     }
     return { payment: Math.min(balance + interest, total), interest };
   }
 
-  // Annuity: min + optional own extra + optional cascade extra (independent)
+  // annuity
   let total = loan.currentMonthlyPayment;
   if (
     loan.extraMonthlyEnabled &&
@@ -70,13 +98,6 @@ function monthPayment(
     dateGte(dateStr, loan.extraMonthlyFrom || startDate)
   ) {
     total += loan.extraMonthly || 0;
-  }
-  if (
-    loan.cascadeExtraEnabled &&
-    (loan.cascadeExtraAmount || 0) > 0 &&
-    dateGte(dateStr, loan.cascadeExtraFrom || startDate)
-  ) {
-    total += loan.cascadeExtraAmount || 0;
   }
   return { payment: Math.min(balance + interest, total), interest };
 }
@@ -105,12 +126,10 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
       const interest = balance * r;
       interestSum += interest;
       balance += interest;
-      let pay: number;
-      if (loan.paymentStyle === "fixed_amort") {
-        pay = Math.min(balance, loan.currentMonthlyPayment + interest);
-      } else {
-        pay = Math.min(balance, loan.currentMonthlyPayment);
-      }
+      const pay =
+        loan.paymentStyle === "fixed_amort"
+          ? Math.min(balance, loan.currentMonthlyPayment + interest)
+          : Math.min(balance, loan.currentMonthlyPayment);
       balance -= pay;
     }
     origResults[loan.id] = { months, interest: Math.round(interestSum) };
@@ -152,13 +171,23 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
   while (active.some((l) => !l.isPaidOff) && currentMonth < 600) {
     currentMonth++;
     const dateStr = getDateFromOffset(startDate, currentMonth - 1);
+
+    // Cascade the freed monthly cash from every paid-off loan (in payoff
+    // order) onto the current highest-priority unpaid loan. This is what
+    // makes cascade/avalanche/snowball actual strategies rather than just
+    // labels — the order picks who benefits, this line does the rolling.
+    let freedPool = 0;
+    active.forEach((l) => {
+      if (l.isPaidOff) freedPool += freedWhenPaid(l);
+    });
+
     const priorityIdx = active.findIndex((l) => !l.isPaidOff);
 
     for (let i = 0; i < active.length; i++) {
       const loan = active[i];
       if (loan.isPaidOff) continue;
 
-      const { payment: basePay, interest } = monthPayment(
+      const { payment: basePay, interest } = monthBasePayment(
         loan,
         loan.currentBalance,
         dateStr,
@@ -168,6 +197,9 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
       loan.currentBalance += interest;
 
       let payment = basePay;
+      if (i === priorityIdx && freedPool > 0) {
+        payment += freedPool;
+      }
 
       const ots = oneTimeMap.get(dateStr);
       if (ots) {
@@ -214,7 +246,9 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
   return {
     totalOriginalInterest: Math.round(totalOrigInterest),
     totalNewInterest: Math.round(totalNewInterest),
-    totalInterestSaved: Math.round(Math.max(0, totalOrigInterest - totalNewInterest)),
+    totalInterestSaved: Math.round(
+      Math.max(0, totalOrigInterest - totalNewInterest)
+    ),
     originalFreedomDate: getDateFromOffset(startDate, maxOriginalMonths),
     newFreedomDate: getDateFromOffset(startDate, maxNewMonths),
     totalMonthsSaved: Math.max(0, maxOriginalMonths - maxNewMonths),

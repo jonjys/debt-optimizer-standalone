@@ -1,5 +1,4 @@
 export type PayoffStrategy = "cascade" | "avalanche" | "snowball";
-
 export type LoanPaymentStyle = "fixed_amort" | "annuity";
 
 export interface Loan {
@@ -9,22 +8,16 @@ export interface Loan {
   paymentStyle: LoanPaymentStyle;
   balance: number;
   interestRate: number;
+  /** fixed_amort = fast amortering; annuity = min total/mån */
   currentMonthlyPayment: number;
-  /** fixed_amort: toppa upp till totalsumma */
+  /** fixed_amort: toppa upp till denna totalsumma */
   targetMonthlyTotal?: number;
   targetMonthlyEnabled?: boolean;
   targetMonthlyFrom?: string;
-  /** annuity: egen extra varje månad (oberoende av kaskad) */
+  /** Extra kr/mån utöver min (alla lånetyper) — oberoende av kaskad */
   extraMonthly?: number;
   extraMonthlyEnabled?: boolean;
   extraMonthlyFrom?: string;
-  /**
-   * Kaskad: när FÖREGÅENDE lån är klart, lägg denna extra här.
-   * Datum sätts automatiskt från föregående låns slut i UI.
-   */
-  cascadeExtraEnabled?: boolean;
-  cascadeExtraAmount?: number;
-  cascadeExtraFrom?: string; // YYYY-MM (auto från föregående slut)
 }
 
 export interface OneTimePayment {
