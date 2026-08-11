@@ -18,7 +18,20 @@ import type {
   Loan,
   OneTimePayment,
   PayoffStrategy,
+  LoanPaymentStyle,
 } from "@/lib/debt-optimizer/types";
+
+const STRATEGY_LABELS: Record<PayoffStrategy, string> = {
+  cascade: "Kaskad",
+  avalanche: "Lavin",
+  snowball: "Snöboll",
+};
+
+const STRATEGY_HINTS: Record<PayoffStrategy, string> = {
+  cascade: "din egna ordning · betalning flyttas till nästa lån när ett är klart",
+  avalanche: "högst ränta först · betalning flyttas till nästa när ett är klart",
+  snowball: "minsta skuld först · betalning flyttas till nästa när ett är klart",
+};
 
 function AnimatedNumber({
   value,
@@ -37,7 +50,7 @@ function AnimatedNumber({
       setDisplay(to);
       return;
     }
-    const duration = 400;
+    const duration = 350;
     const start = performance.now();
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / duration);
@@ -56,20 +69,23 @@ function NumField({
   value,
   onChange,
   className = "",
+  placeholder = "0",
 }: {
   value: number;
   onChange: (n: number) => void;
   className?: string;
+  placeholder?: string;
 }) {
-  const [text, setText] = useState(String(value));
+  const [text, setText] = useState(value ? String(value) : "");
   const focused = useRef(false);
   useEffect(() => {
-    if (!focused.current) setText(String(value));
+    if (!focused.current) setText(value ? String(value) : "");
   }, [value]);
   return (
     <input
       type="text"
       inputMode="decimal"
+      placeholder={placeholder}
       value={text}
       onFocus={() => {
         focused.current = true;
@@ -80,7 +96,10 @@ function NumField({
         if (!isNaN(n)) {
           onChange(n);
           setText(String(n));
-        } else setText(String(value));
+        } else {
+          onChange(0);
+          setText("");
+        }
       }}
       onChange={(e) => {
         const v = e.target.value.replace(/[^\d.,]/g, "");
@@ -104,67 +123,81 @@ function FreedomTimeline({
   const pct = Math.min(100, (Math.max(newMonths, 0) / safe) * 100);
   const saved = Math.max(0, originalMonths - newMonths);
   return (
-    <div className="space-y-2">
-      <div className="flex justify-between text-[11px] text-slate-400">
+    <div className="space-y-1.5">
+      <div className="flex justify-between text-[10px] text-slate-400">
         <span>Din plan</span>
         <span>Original ({originalMonths} mån)</span>
       </div>
-      <div className="h-2.5 bg-slate-800 rounded-full overflow-hidden">
+      <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
         <div
-          className="h-full bg-gradient-to-r from-teal-500 to-emerald-400 rounded-full transition-all duration-500 ease-out"
+          className="h-full bg-gradient-to-r from-teal-500 to-emerald-400 rounded-full transition-all duration-500"
           style={{ width: `${pct}%` }}
         />
       </div>
-      <div className="text-xs text-emerald-400 font-medium">
-        {saved} månader tidigare
+      <div className="text-[11px] text-emerald-400 font-medium">
+        {saved} mån tidigare
       </div>
     </div>
   );
 }
 
-const defaultLoans = (): Loan[] => [
-  {
-    id: "nordea",
-    name: "Nordea",
-    loanType: "Rak amortering",
-    paymentStyle: "fixed_amort",
-    balance: 112455,
-    interestRate: 0.0595,
-    currentMonthlyPayment: 1389,
-    targetMonthlyTotal: 2000,
-    targetMonthlyEnabled: true,
-    targetMonthlyFrom: "2026-08",
-  },
-  {
-    id: "nordax",
-    name: "Nordax",
+function emptyLoan(n: number, startDate: string): Loan {
+  return {
+    id: `loan-${Date.now()}-${n}`,
+    name: `Lån ${n}`,
     loanType: "Annuitet",
     paymentStyle: "annuity",
-    balance: 589111,
-    interestRate: 0.0909,
-    currentMonthlyPayment: 6888,
+    balance: 0,
+    interestRate: 0.05,
+    currentMonthlyPayment: 0,
+    extraMonthly: 0,
+    extraMonthlyEnabled: false,
+    extraMonthlyFrom: startDate,
+  };
+}
+
+/** Empty template – user fills in their own loans */
+const emptyLoans = (): Loan[] => [
+  {
+    id: "loan-1",
+    name: "Lån 1",
+    loanType: "Rak amortering",
+    paymentStyle: "fixed_amort",
+    balance: 0,
+    interestRate: 0.05,
+    currentMonthlyPayment: 0,
+    targetMonthlyTotal: 0,
+    targetMonthlyEnabled: false,
+    targetMonthlyFrom: "2026-08",
     extraMonthly: 0,
     extraMonthlyEnabled: false,
     extraMonthlyFrom: "2026-08",
-    cascadeExtraEnabled: false,
-    cascadeExtraAmount: 2000,
+  },
+  {
+    id: "loan-2",
+    name: "Lån 2",
+    loanType: "Annuitet",
+    paymentStyle: "annuity",
+    balance: 0,
+    interestRate: 0.08,
+    currentMonthlyPayment: 0,
+    extraMonthly: 0,
+    extraMonthlyEnabled: false,
+    extraMonthlyFrom: "2026-08",
   },
 ];
 
 export function DebtOptimizerView() {
-  const [loans, setLoans] = useState<Loan[]>(defaultLoans);
-  const [oneTimePayments, setOneTimePayments] = useState<OneTimePayment[]>([
-    { id: "1", date: "2028-04", amount: 10000, loanId: "nordax" },
-    { id: "2", date: "2029-04", amount: 12000, loanId: "nordax" },
-  ]);
+  const [loans, setLoans] = useState<Loan[]>(emptyLoans);
+  const [oneTimePayments, setOneTimePayments] = useState<OneTimePayment[]>([]);
   const [startDate, setStartDate] = useState("2026-08");
   const [strategy, setStrategy] = useState<PayoffStrategy>("cascade");
-  const [showOneTime, setShowOneTime] = useState(true);
+  const [showOneTime, setShowOneTime] = useState(false);
 
   const result = useMemo(
     () =>
       calculateExcelStrategy({
-        loans,
+        loans: loans.filter((l) => l.balance > 0 && l.currentMonthlyPayment > 0),
         oneTimePayments,
         startDate,
         strategy,
@@ -186,23 +219,15 @@ export function DebtOptimizerView() {
     setLoans((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
   };
 
+  const setStyle = (id: string, style: LoanPaymentStyle) => {
+    updateLoan(id, {
+      paymentStyle: style,
+      loanType: style === "fixed_amort" ? "Rak amortering" : "Annuitet",
+    });
+  };
+
   const addLoan = () => {
-    const id = `loan-${Date.now()}`;
-    setLoans((prev) => [
-      ...prev,
-      {
-        id,
-        name: `Lån ${prev.length + 1}`,
-        loanType: "Annuitet",
-        paymentStyle: "annuity",
-        balance: 50000,
-        interestRate: 0.08,
-        currentMonthlyPayment: 1000,
-        extraMonthly: 0,
-        extraMonthlyEnabled: false,
-        extraMonthlyFrom: startDate,
-      },
-    ]);
+    setLoans((prev) => [...prev, emptyLoan(prev.length + 1, startDate)]);
   };
 
   const removeLoan = (id: string) => {
@@ -215,7 +240,7 @@ export function DebtOptimizerView() {
       {
         id: Date.now().toString(),
         date: startDate,
-        amount: 10000,
+        amount: 0,
         loanId: loanId || loans[0]?.id,
       },
     ]);
@@ -234,142 +259,225 @@ export function DebtOptimizerView() {
 
   const removeOneTime = (id: string) => {
     setOneTimePayments((prev) => prev.filter((p) => p.id !== id));
-  };  return (
+  };
+
+  const loadDemo = () => {
+    setLoans([
+      {
+        id: "nordea",
+        name: "Nordea",
+        loanType: "Rak amortering",
+        paymentStyle: "fixed_amort",
+        balance: 112455,
+        interestRate: 0.0595,
+        currentMonthlyPayment: 1389,
+        targetMonthlyTotal: 2000,
+        targetMonthlyEnabled: true,
+        targetMonthlyFrom: startDate,
+      },
+      {
+        id: "nordax",
+        name: "Nordax",
+        loanType: "Annuitet",
+        paymentStyle: "annuity",
+        balance: 589111,
+        interestRate: 0.0909,
+        currentMonthlyPayment: 6888,
+        extraMonthly: 500,
+        extraMonthlyEnabled: true,
+        extraMonthlyFrom: startDate,
+      },
+    ]);
+    setOneTimePayments([]);
+    setStrategy("cascade");
+  };
+
+  // Payoff-order predecessor for each loan, per the CURRENT strategy — not
+  // just "previous in the input list", since Lavin/Snöboll reorder loans.
+  const sortedResults = useMemo(
+    () => [...result.loanResults].sort((a, b) => a.payoffOrder - b.payoffOrder),
+    [result.loanResults]
+  );
+  const prevEndDateFor = (loanId: string) => {
+    const res = sortedResults.find((r) => r.id === loanId);
+    if (!res || res.payoffOrder <= 1) return null;
+    return sortedResults[res.payoffOrder - 2]?.newEndDate ?? null;
+  };
+
+  return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="max-w-6xl mx-auto px-4 py-6 lg:py-10">
-        <header className="mb-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 text-teal-400 text-xs font-bold uppercase tracking-wider mb-1">
-              <Calculator className="w-4 h-4" />
-              Karma Debt Engine
+      <div className="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-8">
+        <header className="mb-4 flex flex-col gap-3">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-1.5 text-teal-400 text-[10px] font-bold uppercase tracking-wider">
+                <Calculator className="w-3.5 h-3.5" />
+                Karma Debt Engine
+              </div>
+              <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">
+                Lånekalkylator
+              </h1>
+              <p className="text-slate-500 text-xs mt-0.5">
+                Fyll i dina lån · välj strategi · se slutdatum & sparad ränta
+              </p>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
-              Lånekalkylator & Strategi
-            </h1>
-            <p className="text-slate-400 text-sm mt-1 max-w-lg">
-              Nordea: toppa upp till fast totalsumma. Nordax: extra ovanpå
-              annuitet. Engångs per lån.
-            </p>
+            <div className="flex flex-col items-end gap-1.5 shrink-0">
+              <input
+                type="month"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono font-bold text-teal-400"
+              />
+              <button
+                type="button"
+                onClick={loadDemo}
+                className="text-[10px] text-slate-500 hover:text-teal-400 underline"
+              >
+                Ladda exempel
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-2 rounded-xl">
-            <span className="text-xs text-slate-400">Start</span>
-            <input
-              type="month"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono font-bold text-teal-400"
-            />
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(
+              Object.keys(STRATEGY_LABELS) as PayoffStrategy[]
+            ).map((key) => (
+              <button
+                key={key}
+                onClick={() => setStrategy(key)}
+                className={`text-[11px] px-2.5 py-1 rounded-lg border transition ${
+                  strategy === key
+                    ? "bg-teal-600/25 border-teal-500/50 text-teal-300 font-bold"
+                    : "bg-slate-900 border-slate-700 text-slate-400"
+                }`}
+              >
+                {STRATEGY_LABELS[key]}
+              </button>
+            ))}
+            <span className="text-[10px] text-slate-500 self-center ml-1">
+              {STRATEGY_HINTS[strategy]}
+            </span>
           </div>
         </header>
 
-        <div className="mb-6 bg-slate-900 border border-slate-800 rounded-2xl p-3 flex flex-wrap gap-2 items-center">
-          <span className="text-[11px] text-slate-400 font-medium mr-1">
-            Strategi
-          </span>
-          {(
-            [
-              ["cascade", "Kaskad (din ordning)"],
-              ["avalanche", "Lavin (högst ränta)"],
-              ["snowball", "Snöboll (lägst skuld)"],
-            ] as [PayoffStrategy, string][]
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setStrategy(key)}
-              className={`text-xs px-3 py-1.5 rounded-lg border transition ${
-                strategy === key
-                  ? "bg-teal-600/25 border-teal-500/50 text-teal-300 font-bold"
-                  : "bg-slate-950 border-slate-700 text-slate-400 hover:border-slate-500"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8">
-          <section className="lg:col-span-5 space-y-4">
-            {loans.map((loan, idx) => {
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6">
+          <section className="lg:col-span-5 space-y-3">
+            {loans.map((loan) => {
               const res = result.loanResults.find((r) => r.id === loan.id);
               const isFixed = loan.paymentStyle === "fixed_amort";
+              const extraOn = !!loan.extraMonthlyEnabled;
+              const extraAmt = extraOn ? loan.extraMonthly || 0 : 0;
+              const nowTotal = isFixed
+                ? (loan.targetMonthlyEnabled
+                    ? loan.targetMonthlyTotal || 0
+                    : loan.currentMonthlyPayment) + extraAmt
+                : loan.currentMonthlyPayment + extraAmt;
+              const prevEndDate = prevEndDateFor(loan.id);
+
               return (
                 <div
                   key={loan.id}
-                  className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 space-y-3"
+                  className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 space-y-2.5"
                 >
-                  <div className="flex items-center justify-between gap-2">
+                  {/* Header */}
+                  <div className="flex items-center gap-2">
                     <input
                       type="text"
                       value={loan.name}
+                      placeholder="Namn på lån"
                       onChange={(e) =>
                         updateLoan(loan.id, { name: e.target.value })
                       }
-                      className="bg-transparent font-bold text-white text-sm border-b border-transparent hover:border-slate-600 focus:border-teal-500 outline-none flex-1 min-w-0"
+                      className="bg-transparent font-bold text-white text-sm border-b border-transparent focus:border-teal-500 outline-none flex-1 min-w-0"
                     />
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-[10px] text-slate-500">
-                        {isFixed ? "fast amort" : "annuitet"}
-                      </span>
-                      <span className="text-xs font-mono text-teal-400">
-                        {res?.newEndDate ?? "—"}
-                      </span>
-                      {loans.length > 1 && (
-                        <button
-                          onClick={() => removeLoan(loan.id)}
-                          className="p-1 text-slate-600 hover:text-red-400"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
+                    <span className="text-xs font-mono text-teal-400 shrink-0">
+                      {res?.newEndDate ?? "—"}
+                    </span>
+                    {loans.length > 1 && (
+                      <button
+                        onClick={() => removeLoan(loan.id)}
+                        className="p-1 text-slate-600 hover:text-red-400"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  {/* Style toggle */}
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setStyle(loan.id, "fixed_amort")}
+                      className={`text-[10px] px-2 py-0.5 rounded-md border ${
+                        isFixed
+                          ? "border-amber-500/40 text-amber-300 bg-amber-500/10"
+                          : "border-slate-700 text-slate-500"
+                      }`}
+                    >
+                      Fast amortering
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStyle(loan.id, "annuity")}
+                      className={`text-[10px] px-2 py-0.5 rounded-md border ${
+                        !isFixed
+                          ? "border-amber-500/40 text-amber-300 bg-amber-500/10"
+                          : "border-slate-700 text-slate-500"
+                      }`}
+                    >
+                      Annuitet
+                    </button>
+                  </div>
+
+                  {/* Core fields */}
+                  <div className="grid grid-cols-3 gap-2">
                     <div>
-                      <label className="text-[11px] text-slate-500 block mb-1">
-                        Skuld (kr)
+                      <label className="text-[9px] text-slate-500 block mb-0.5">
+                        Skuld
                       </label>
                       <NumField
                         value={loan.balance}
                         onChange={(n) => updateLoan(loan.id, { balance: n })}
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-mono text-slate-200 outline-none focus:border-teal-500/50"
+                        placeholder="0"
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-200 outline-none focus:border-teal-500/50"
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] text-slate-500 block mb-1">
-                        Ränta (%)
+                      <label className="text-[9px] text-slate-500 block mb-0.5">
+                        Ränta %
                       </label>
                       <NumField
-                        value={+(loan.interestRate * 100).toFixed(2)}
+                        value={
+                          loan.interestRate
+                            ? +(loan.interestRate * 100).toFixed(2)
+                            : 0
+                        }
                         onChange={(n) =>
                           updateLoan(loan.id, { interestRate: n / 100 })
                         }
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-mono text-slate-200 outline-none focus:border-teal-500/50"
+                        placeholder="5"
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-200 outline-none focus:border-teal-500/50"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-slate-500 block mb-0.5">
+                        {isFixed ? "Amortering" : "Min/mån"}
+                      </label>
+                      <NumField
+                        value={loan.currentMonthlyPayment}
+                        onChange={(n) =>
+                          updateLoan(loan.id, { currentMonthlyPayment: n })
+                        }
+                        placeholder="0"
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-200 outline-none focus:border-teal-500/50"
                       />
                     </div>
                   </div>
 
-                  <div>
-                    <label className="text-[11px] text-slate-500 block mb-1">
-                      {isFixed ? "Fast amortering / mån" : "Min. total / mån"}
-                    </label>
-                    <NumField
-                      value={loan.currentMonthlyPayment}
-                      onChange={(n) =>
-                        updateLoan(loan.id, { currentMonthlyPayment: n })
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-mono text-slate-200 outline-none focus:border-teal-500/50"
-                    />
-                    {isFixed && (
-                      <p className="text-[10px] text-slate-600 mt-1">
-                        + ränta varje månad (t.ex. 1389 + 568 = 1957 i aug)
-                      </p>
-                    )}
-                  </div>
-
+                  {/* Top-up for fixed amort */}
                   {isFixed && (
-                    <div className="bg-slate-950/70 border border-amber-500/30 rounded-xl p-3 space-y-2">
-                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <div className="flex flex-wrap items-center gap-2 bg-slate-950/50 rounded-lg px-2 py-1.5 border border-slate-800">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={!!loan.targetMonthlyEnabled}
@@ -380,283 +488,163 @@ export function DebtOptimizerView() {
                                 loan.targetMonthlyFrom || startDate,
                             })
                           }
-                          className="w-4 h-4 rounded accent-amber-400"
+                          className="w-3.5 h-3.5 rounded accent-amber-400"
                         />
-                        <span className="text-xs font-semibold text-amber-300">
-                          Toppa upp till fast totalsumma
+                        <span className="text-[10px] text-amber-300 font-medium">
+                          Toppa till
                         </span>
                       </label>
                       {loan.targetMonthlyEnabled && (
-                        <div className="grid grid-cols-2 gap-2 pl-6">
-                          <div>
-                            <label className="text-[10px] text-slate-500 block mb-0.5">
-                              Totalt kr/mån
-                            </label>
-                            <NumField
-                              value={loan.targetMonthlyTotal ?? 2000}
-                              onChange={(n) =>
-                                updateLoan(loan.id, {
-                                  targetMonthlyTotal: n,
-                                })
-                              }
-                              className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-amber-300 text-center outline-none"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] text-slate-500 block mb-0.5">
-                              Från datum
-                            </label>
-                            <input
-                              type="month"
-                              value={loan.targetMonthlyFrom || startDate}
-                              onChange={(e) =>
-                                updateLoan(loan.id, {
-                                  targetMonthlyFrom: e.target.value,
-                                })
-                              }
-                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-teal-400"
-                            />
-                          </div>
-                        </div>
+                        <>
+                          <NumField
+                            value={loan.targetMonthlyTotal ?? 0}
+                            onChange={(n) =>
+                              updateLoan(loan.id, { targetMonthlyTotal: n })
+                            }
+                            placeholder="2000"
+                            className="w-16 bg-slate-950 border border-amber-500/40 rounded-md px-1.5 py-1 text-[11px] font-mono font-bold text-amber-300 text-center outline-none"
+                          />
+                          <span className="text-[9px] text-slate-500">från</span>
+                          <input
+                            type="month"
+                            value={loan.targetMonthlyFrom || startDate}
+                            onChange={(e) =>
+                              updateLoan(loan.id, {
+                                targetMonthlyFrom: e.target.value,
+                              })
+                            }
+                            className="bg-slate-950 border border-slate-700 rounded-md px-1 py-1 text-[10px] font-mono text-teal-400"
+                          />
+                        </>
                       )}
-                      <p className="text-[10px] text-slate-500 pl-6">
-                        Betalar alltid{" "}
-                        {loan.targetMonthlyEnabled
-                          ? (loan.targetMonthlyTotal ?? 2000).toLocaleString(
-                              "sv-SE"
-                            )
-                          : "amort + ränta"}{" "}
-                        kr. När räntan sjunker går mer till amortering.
-                      </p>
                     </div>
                   )}
 
-                  {!isFixed && (
-                    <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 space-y-2">
-                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  {/* Extra monthly – compact one row */}
+                  <div className="flex flex-wrap items-center gap-2 bg-slate-950/50 rounded-lg px-2 py-1.5 border border-slate-800">
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={extraOn}
+                        onChange={(e) =>
+                          updateLoan(loan.id, {
+                            extraMonthlyEnabled: e.target.checked,
+                            extraMonthlyFrom:
+                              loan.extraMonthlyFrom || startDate,
+                          })
+                        }
+                        className="w-3.5 h-3.5 rounded accent-amber-400"
+                      />
+                      <span className="text-[10px] text-amber-300 font-medium">
+                        Extra/mån
+                      </span>
+                    </label>
+                    {extraOn && (
+                      <>
+                        <NumField
+                          value={loan.extraMonthly ?? 0}
+                          onChange={(n) =>
+                            updateLoan(loan.id, { extraMonthly: n })
+                          }
+                          placeholder="500"
+                          className="w-16 bg-slate-950 border border-amber-500/40 rounded-md px-1.5 py-1 text-[11px] font-mono font-bold text-amber-300 text-center outline-none"
+                        />
+                        <span className="text-[9px] text-slate-500">från</span>
                         <input
-                          type="checkbox"
-                          checked={!!loan.extraMonthlyEnabled}
+                          type="month"
+                          value={loan.extraMonthlyFrom || startDate}
                           onChange={(e) =>
                             updateLoan(loan.id, {
-                              extraMonthlyEnabled: e.target.checked,
-                              extraMonthlyFrom:
-                                loan.extraMonthlyFrom || startDate,
+                              extraMonthlyFrom: e.target.value,
                             })
                           }
-                          className="w-4 h-4 rounded accent-amber-400"
+                          className="bg-slate-950 border border-slate-700 rounded-md px-1 py-1 text-[10px] font-mono text-teal-400"
                         />
-                        <span className="text-xs font-semibold text-amber-300">
-                          Extra inbetalning månadsvis
-                        </span>
-                      </label>
-                      {loan.extraMonthlyEnabled && (
-                        <div className="grid grid-cols-2 gap-2 pl-6">
-                          <div>
-                            <label className="text-[10px] text-slate-500 block mb-0.5">
-                              Extra (kr)
-                            </label>
-                            <NumField
-                              value={loan.extraMonthly ?? 0}
-                              onChange={(n) =>
-                                updateLoan(loan.id, { extraMonthly: n })
-                              }
-                              className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-amber-300 text-center outline-none"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] text-slate-500 block mb-0.5">
-                              Från datum
-                            </label>
-                            <input
-                              type="month"
-                              value={loan.extraMonthlyFrom || startDate}
-                              onChange={(e) =>
-                                updateLoan(loan.id, {
-                                  extraMonthlyFrom: e.target.value,
-                                })
-                              }
-                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-teal-400"
-                            />
-                          </div>
-                        </div>
-                      )}
-                      <p className="text-[10px] text-slate-500 pl-6">
-                        Totalt ca{" "}
-                        {(
-                          loan.currentMonthlyPayment +
-                          (loan.extraMonthlyEnabled
-                            ? loan.extraMonthly || 0
-                            : 0) +
-                          (loan.cascadeExtraEnabled
-                            ? loan.cascadeExtraAmount || 0
-                            : 0)
-                        ).toLocaleString("sv-SE")}{" "}
-                        kr/mån (inkl. kaskad om aktiv)
-                      </p>
-                    </div>
-                  )}
+                      </>
+                    )}
+                  </div>
 
-                  {idx > 0 && strategy === "cascade" && (() => {
-                    const prev = loans[idx - 1];
-                    const prevRes = result.loanResults.find(
-                      (r) => r.id === prev.id
-                    );
-                    const prevDate = prevRes?.newEndDate || "—";
-                    const prevTotal =
-                      prev.paymentStyle === "fixed_amort" &&
-                      prev.targetMonthlyEnabled
-                        ? prev.targetMonthlyTotal || prev.currentMonthlyPayment
-                        : prev.currentMonthlyPayment +
-                          (prev.extraMonthlyEnabled
-                            ? prev.extraMonthly || 0
-                            : 0);
-                    return (
-                      <div className="bg-teal-950/40 border border-teal-500/30 rounded-xl p-3 space-y-2">
-                        <label className="flex items-start gap-2.5 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={!!loan.cascadeExtraEnabled}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                updateLoan(loan.id, {
-                                  cascadeExtraEnabled: true,
-                                  cascadeExtraAmount:
-                                    loan.cascadeExtraAmount &&
-                                    loan.cascadeExtraAmount > 0
-                                      ? loan.cascadeExtraAmount
-                                      : prevTotal,
-                                  cascadeExtraFrom:
-                                    prevDate !== "—" ? prevDate : startDate,
-                                });
-                              } else {
-                                updateLoan(loan.id, {
-                                  cascadeExtraEnabled: false,
-                                });
-                              }
-                            }}
-                            className="w-4 h-4 mt-0.5 rounded accent-teal-400"
-                          />
-                          <span className="text-xs text-teal-200 leading-snug">
-                            När{" "}
-                            <span className="font-bold text-white">
-                              {prev.name}
-                            </span>{" "}
-                            är avbetalt (
-                            <span className="font-mono text-teal-300">
-                              {prevDate}
-                            </span>
-                            ): börja betala extra
+                  {/* Clear current total */}
+                  <div className="text-[10px] text-slate-500 px-0.5">
+                    Betalar nu ca{" "}
+                    <span className="text-slate-300 font-mono">
+                      {nowTotal > 0 ? nowTotal.toLocaleString("sv-SE") : "—"}
+                    </span>{" "}
+                    kr/mån
+                    {prevEndDate && (
+                      <span className="text-teal-500/70">
+                        {" "}
+                        · +kaskad från {prevEndDate}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => addOneTime(loan.id)}
+                      className="text-[10px] text-emerald-400/90 hover:text-emerald-300"
+                    >
+                      + Engångs
+                    </button>
+                    <div className="text-[10px] font-mono text-slate-500">
+                      {res ? (
+                        <>
+                          <span>{res.originalEndDate}</span>
+                          <ArrowRight className="inline w-2.5 h-2.5 mx-0.5 text-slate-600" />
+                          <span className="text-teal-400">{res.newEndDate}</span>
+                          <span className="text-emerald-400 ml-1.5">
+                            −
+                            <AnimatedNumber value={res.interestSaved} />
                           </span>
-                        </label>
-                        {loan.cascadeExtraEnabled && (
-                          <div className="grid grid-cols-2 gap-2 pl-6">
-                            <div>
-                              <label className="text-[10px] text-slate-500 block mb-0.5">
-                                Extra kr/mån
-                              </label>
-                              <NumField
-                                value={loan.cascadeExtraAmount ?? prevTotal}
-                                onChange={(n) =>
-                                  updateLoan(loan.id, {
-                                    cascadeExtraAmount: n,
-                                    cascadeExtraEnabled: true,
-                                  })
-                                }
-                                className="w-full bg-slate-950 border border-teal-500/40 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-teal-300 text-center outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[10px] text-slate-500 block mb-0.5">
-                                Från (auto)
-                              </label>
-                              <input
-                                type="month"
-                                value={
-                                  loan.cascadeExtraFrom ||
-                                  (prevDate !== "—" ? prevDate : startDate)
-                                }
-                                onChange={(e) =>
-                                  updateLoan(loan.id, {
-                                    cascadeExtraFrom: e.target.value,
-                                    cascadeExtraEnabled: true,
-                                  })
-                                }
-                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-teal-400"
-                              />
-                            </div>
-                          </div>
-                        )}
-                        <p className="text-[10px] text-slate-500 pl-6">
-                          Oberoende av Extra månadsvis ovan. Förvalt{" "}
-                          {prevTotal.toLocaleString("sv-SE")} kr (= {prev.name}
-                          ).
-                        </p>
-                      </div>
-                    );
-                  })()}
-
-                  <button
-                    type="button"
-                    onClick={() => addOneTime(loan.id)}
-                    className="w-full text-[11px] py-2 rounded-xl bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 transition"
-                  >
-                    + Engångsbetalning på {loan.name}
-                  </button>
-
-                  <div className="flex justify-between items-center text-[11px] font-mono pt-1 border-t border-slate-800">
-                    <span className="text-slate-500">
-                      {res?.originalEndDate}{" "}
-                      <ArrowRight className="inline w-3 h-3 text-slate-600" />{" "}
-                      <span className="text-teal-400">{res?.newEndDate}</span>
-                    </span>
-                    <span className="text-emerald-400">
-                      −
-                      <AnimatedNumber value={res?.interestSaved ?? 0} /> kr
-                    </span>
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </div>
                   </div>
                 </div>
               );
-            })}            <button
+            })}
+
+            <button
               onClick={addLoan}
-              className="w-full flex items-center justify-center gap-2 text-sm bg-slate-900 hover:bg-slate-800 border border-dashed border-slate-600 text-slate-300 py-3 rounded-2xl transition"
+              className="w-full flex items-center justify-center gap-1.5 text-xs bg-slate-900 hover:bg-slate-800 border border-dashed border-slate-600 text-slate-400 py-2.5 rounded-xl"
             >
-              <Plus className="w-4 h-4" /> Lägg till lån
+              <Plus className="w-3.5 h-3.5" /> Lägg till lån
             </button>
 
-            <div className="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden">
+            {/* One-time collapsed */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden">
               <button
                 onClick={() => setShowOneTime(!showOneTime)}
-                className="w-full flex items-center justify-between p-4 text-left"
+                className="w-full flex items-center justify-between px-3 py-2.5 text-left"
               >
-                <div className="flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-teal-400" />
-                  <span className="text-sm font-bold text-white">
-                    Engångsbetalningar
+                <div className="flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-teal-400" />
+                  <span className="text-xs font-bold text-white">
+                    Engångs
                   </span>
-                  <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded-full">
+                  <span className="text-[9px] bg-slate-800 text-slate-400 px-1.5 rounded-full">
                     {oneTimePayments.length}
                   </span>
                 </div>
                 {showOneTime ? (
-                  <ChevronUp className="w-4 h-4 text-slate-500" />
+                  <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
                 ) : (
-                  <ChevronDown className="w-4 h-4 text-slate-500" />
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
                 )}
               </button>
               {showOneTime && (
-                <div className="px-4 pb-4 space-y-2">
+                <div className="px-3 pb-3 space-y-1.5">
                   {oneTimePayments.map((p) => (
-                    <div
-                      key={p.id}
-                      className="flex flex-wrap items-center gap-2"
-                    >
+                    <div key={p.id} className="flex flex-wrap items-center gap-1.5">
                       <select
                         value={p.loanId || ""}
                         onChange={(e) =>
                           updateOneTime(p.id, "loanId", e.target.value)
                         }
-                        className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 max-w-[110px]"
+                        className="bg-slate-950 border border-slate-700 rounded-md px-1.5 py-1 text-[10px] text-slate-200 max-w-[90px]"
                       >
                         {loans.map((l) => (
                           <option key={l.id} value={l.id}>
@@ -670,122 +658,136 @@ export function DebtOptimizerView() {
                         onChange={(e) =>
                           updateOneTime(p.id, "date", e.target.value)
                         }
-                        className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-200"
+                        className="bg-slate-950 border border-slate-700 rounded-md px-1 py-1 text-[10px] font-mono text-slate-200"
                       />
                       <NumField
                         value={p.amount}
                         onChange={(n) => updateOneTime(p.id, "amount", n)}
-                        className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-emerald-400 w-24 outline-none"
+                        placeholder="10000"
+                        className="bg-slate-950 border border-slate-700 rounded-md px-1.5 py-1 text-[10px] font-mono font-bold text-emerald-400 w-20 outline-none"
                       />
                       <button
                         onClick={() => removeOneTime(p.id)}
-                        className="p-1.5 text-slate-500 hover:text-red-400"
+                        className="p-1 text-slate-500 hover:text-red-400"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="w-3 h-3" />
                       </button>
                     </div>
                   ))}
                   <button
                     onClick={() => addOneTime()}
-                    className="w-full flex items-center justify-center gap-1.5 text-xs bg-teal-600/15 hover:bg-teal-600/25 text-teal-300 border border-teal-500/20 py-2.5 rounded-xl transition"
+                    className="w-full text-[10px] py-1.5 rounded-lg bg-teal-600/15 text-teal-300 border border-teal-500/20"
                   >
-                    <Plus className="w-3.5 h-3.5" /> Lägg till engångs
+                    + Engångs
                   </button>
                 </div>
               )}
             </div>
           </section>
 
-          <section className="lg:col-span-7 lg:sticky lg:top-6 self-start space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  Helt skuldfri
+          <section className="lg:col-span-7 space-y-3 lg:sticky lg:top-4 self-start">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+                  Skuldfri
                 </div>
-                <div className="text-2xl font-black text-white mt-1 font-mono">
-                  {result.newFreedomDate}
+                <div className="text-lg sm:text-xl font-black text-white mt-0.5 font-mono">
+                  {result.newFreedomDate === "-"
+                    ? "—"
+                    : result.newFreedomDate}
                 </div>
-                <div className="text-xs text-emerald-400 mt-1.5 flex items-center gap-1 font-medium">
-                  <Sparkles className="w-3.5 h-3.5" />
+                <div className="text-[10px] text-emerald-400 mt-1 flex items-center gap-0.5 font-medium">
+                  <Sparkles className="w-3 h-3" />
                   <AnimatedNumber value={result.totalMonthsSaved} /> mån
-                  snabbare
                 </div>
               </div>
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
                   Sparad ränta
                 </div>
-                <div className="text-2xl font-black text-emerald-400 mt-1 font-mono">
+                <div className="text-lg sm:text-xl font-black text-emerald-400 mt-0.5 font-mono">
                   <AnimatedNumber value={result.totalInterestSaved} />
-                  <span className="text-base ml-0.5">kr</span>
                 </div>
-                <div className="text-[11px] text-slate-500 mt-1.5">
+                <div className="text-[9px] text-slate-500 mt-1 truncate">
                   {result.totalOriginalInterest.toLocaleString("sv-SE")} →{" "}
                   {result.totalNewInterest.toLocaleString("sv-SE")}
                 </div>
               </div>
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  Första lånet klart
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+                  Första klart
                 </div>
-                <div className="text-2xl font-black text-teal-300 mt-1 font-mono">
-                  {result.firstDebtPaidDate}
+                <div className="text-lg sm:text-xl font-black text-teal-300 mt-0.5 font-mono">
+                  {result.firstDebtPaidDate === "-"
+                    ? "—"
+                    : result.firstDebtPaidDate}
                 </div>
-                <div className="text-[11px] text-slate-500 mt-1.5">
-                  Original: {result.originalFreedomDate}
+                <div className="text-[9px] text-slate-500 mt-1">
+                  Orig: {result.originalFreedomDate}
                 </div>
               </div>
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-              <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
-                <TrendingDown className="w-4 h-4 text-teal-400" />
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5">
+              <h3 className="text-xs font-bold text-white mb-2 flex items-center gap-1.5">
+                <TrendingDown className="w-3.5 h-3.5 text-teal-400" />
                 Tidslinje
               </h3>
               <FreedomTimeline
-                originalMonths={origMonths}
-                newMonths={newMonths}
+                originalMonths={origMonths || 0}
+                newMonths={newMonths || 0}
               />
             </div>
 
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
-              <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                <Layers className="w-4 h-4 text-teal-400" />
-                Avbetalningsordning
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5">
+              <h3 className="text-xs font-bold text-white mb-2 flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-teal-400" />
+                Ordning
               </h3>
-              <div className="space-y-3">
-                {[...result.loanResults]
-                  .sort((a, b) => a.payoffOrder - b.payoffOrder)
-                  .map((r) => (
-                    <div
-                      key={r.id}
-                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 py-2.5 border-b border-slate-800 last:border-0"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-bold bg-slate-800 text-slate-400 w-5 h-5 rounded-full flex items-center justify-center">
-                          {r.payoffOrder}
-                        </span>
-                        <span className="font-medium text-white text-sm">
-                          {r.name}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-3 text-xs font-mono pl-7 sm:pl-0">
-                        <span className="text-slate-500">
-                          {r.originalEndDate}
-                        </span>
-                        <ArrowRight className="w-3.5 h-3.5 text-slate-600" />
-                        <span className="text-teal-400 font-bold">
-                          {r.newEndDate}
-                        </span>
-                        <span className="text-emerald-400">
-                          −
-                          <AnimatedNumber value={r.interestSaved} /> kr
-                        </span>
-                      </div>
+              <div className="space-y-1.5">
+                {sortedResults.map((r) => (
+                  <div
+                    key={r.id}
+                    className="flex items-center justify-between gap-2 py-1.5 border-b border-slate-800 last:border-0 text-xs"
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-[9px] font-bold bg-slate-800 text-slate-400 w-4 h-4 rounded-full flex items-center justify-center shrink-0">
+                        {r.payoffOrder}
+                      </span>
+                      <span className="font-medium text-white truncate">
+                        {r.name}
+                      </span>
                     </div>
-                  ))}
+                    <div className="flex items-center gap-1.5 text-[10px] font-mono shrink-0">
+                      <span className="text-slate-500">
+                        {r.originalEndDate}
+                      </span>
+                      <ArrowRight className="w-3 h-3 text-slate-600" />
+                      <span className="text-teal-400 font-bold">
+                        {r.newEndDate}
+                      </span>
+                      <span className="text-emerald-400">
+                        −
+                        <AnimatedNumber value={r.interestSaved} />
+                      </span>
+                    </div>
+                  </div>
+                ))}
+                {result.loanResults.length === 0 && (
+                  <p className="text-[11px] text-slate-500 py-2">
+                    Fyll i skuld och månadsbelopp för att se resultat.
+                  </p>
+                )}
               </div>
             </div>
+
+            <p className="text-[10px] text-slate-600 text-center px-2 leading-relaxed">
+              <b>Extra/mån från [datum]</b> gäller från det datumet, varje
+              månad, oavsett strategi.{" "}
+              <b>Kaskad</b> (i alla strategier) lägger automatiskt föregående
+              låns hela betalning på nästa lån i tur när det är klart — det
+              är inte samma sak som extra från start.
+            </p>
           </section>
         </div>
       </div>
