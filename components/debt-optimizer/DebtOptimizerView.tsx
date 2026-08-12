@@ -187,12 +187,58 @@ const emptyLoans = (): Loan[] => [
   },
 ];
 
+const STORAGE_KEY = "karma-debt-optimizer-v1";
+
 export function DebtOptimizerView() {
   const [loans, setLoans] = useState<Loan[]>(emptyLoans);
   const [oneTimePayments, setOneTimePayments] = useState<OneTimePayment[]>([]);
   const [startDate, setStartDate] = useState("2026-08");
   const [strategy, setStrategy] = useState<PayoffStrategy>("cascade");
   const [showOneTime, setShowOneTime] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+
+  // Load any previously saved plan once, after mount (avoids SSR/client
+  // hydration mismatch — first render always matches the server's default).
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (Array.isArray(saved.loans) && saved.loans.length) setLoans(saved.loans);
+        if (Array.isArray(saved.oneTimePayments))
+          setOneTimePayments(saved.oneTimePayments);
+        if (saved.startDate) setStartDate(saved.startDate);
+        if (saved.strategy) setStrategy(saved.strategy);
+      }
+    } catch {
+      // corrupt/blocked storage — just start fresh
+    }
+    setHydrated(true);
+  }, []);
+
+  // Persist on every change, once the initial load above has settled.
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ loans, oneTimePayments, startDate, strategy })
+      );
+    } catch {
+      // storage full/blocked — plan still works, just won't persist
+    }
+  }, [hydrated, loans, oneTimePayments, startDate, strategy]);
+
+  const clearAll = () => {
+    setLoans(emptyLoans());
+    setOneTimePayments([]);
+    setStrategy("cascade");
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  };
 
   const result = useMemo(
     () =>
@@ -328,13 +374,23 @@ export function DebtOptimizerView() {
                 onChange={(e) => setStartDate(e.target.value)}
                 className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono font-bold text-teal-400"
               />
-              <button
-                type="button"
-                onClick={loadDemo}
-                className="text-[10px] text-slate-500 hover:text-teal-400 underline"
-              >
-                Ladda exempel
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={loadDemo}
+                  className="text-[10px] text-slate-500 hover:text-teal-400 underline"
+                >
+                  Ladda exempel
+                </button>
+                <span className="text-[10px] text-slate-700">·</span>
+                <button
+                  type="button"
+                  onClick={clearAll}
+                  className="text-[10px] text-slate-500 hover:text-red-400 underline"
+                >
+                  Rensa allt
+                </button>
+              </div>
             </div>
           </div>
 
