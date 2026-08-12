@@ -144,36 +144,101 @@ describe("Avalanche order", () => {
   });
 });
 
-describe("Cascade auto-roll", () => {
-  it("GOLDEN 5: once loan A is paid off, its full payment rolls onto loan B automatically", () => {
-    const r = run(
+describe("Manual mode: no automatic transfer between loans", () => {
+  it("loan A paying off does NOT speed up loan B unless reinvestment is explicitly enabled", () => {
+    const withA = run(
       [
         mkLoan({ id: "a", balance: 3000, interestRate: 0.05, currentMonthlyPayment: 1000 }), // pays off in ~3 months
         mkLoan({ id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500 }),
       ],
       { strategy: "cascade" }
     );
-    const a = r.loanResults.find((x) => x.id === "a")!;
-    const b = r.loanResults.find((x) => x.id === "b")!;
-    expect(a.isFullyAmortizing).toBe(true);
-    // B must pay off faster than it would alone at 500/mo (50000/500 = 100mo)
     const bAlone = run([mkLoan({ id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500 })]);
-    expect(b.newTotalInterest).toBeLessThan(bAlone.loanResults[0].newTotalInterest);
+    const b = withA.loanResults.find((x) => x.id === "b")!;
+    // No auto-roll: B's own payoff is completely unaffected by A finishing.
+    expect(b.newTotalInterest).toBe(bAlone.loanResults[0].newTotalInterest);
+    expect(b.newEndDate).toBe(bAlone.loanResults[0].newEndDate);
   });
 
-  it("no separate cascade checkbox needed: the roll happens automatically for cascade/avalanche/snowball alike", () => {
+  it("this holds for cascade/avalanche/snowball alike — order no longer implies auto-rolling payment", () => {
     const loans = () => [
       mkLoan({ id: "a", balance: 3000, interestRate: 0.05, currentMonthlyPayment: 1000 }),
       mkLoan({ id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500 }),
     ];
+    const bAlone = run([mkLoan({ id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500 })])
+      .loanResults[0].newTotalInterest;
     for (const strategy of ["cascade", "avalanche", "snowball"] as const) {
       const r = run(loans(), { strategy });
       const b = r.loanResults.find((x) => x.id === "b")!;
-      expect(b.newTotalInterest).toBeLessThan(
-        run([mkLoan({ id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500 })]).loanResults[0]
-          .newTotalInterest
-      );
+      expect(b.newTotalInterest).toBe(bAlone);
     }
+  });
+});
+
+describe("Manual reinvestment", () => {
+  it("GOLDEN 5 (manual): enabling reinvestment on B, sourced from A's freed payment, speeds up B's payoff", () => {
+    const withReinvestment = run([
+      mkLoan({ id: "a", balance: 3000, interestRate: 0.05, currentMonthlyPayment: 1000 }), // clears ~month 3
+      mkLoan({
+        id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500,
+        reinvestment: { enabled: true, fromLoanId: "a", amount: 1000, startDate: "2026-04" },
+      }),
+    ]);
+    const withoutReinvestment = run([
+      mkLoan({ id: "a", balance: 3000, interestRate: 0.05, currentMonthlyPayment: 1000 }),
+      mkLoan({ id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500 }),
+    ]);
+    const bWith = withReinvestment.loanResults.find((x) => x.id === "b")!;
+    const bWithout = withoutReinvestment.loanResults.find((x) => x.id === "b")!;
+    expect(bWith.newTotalInterest).toBeLessThan(bWithout.newTotalInterest);
+    expect(bWith.monthsSaved).toBeGreaterThan(0);
+  });
+
+  it("reinvestment only applies from startDate onward, not before", () => {
+    const early = run([
+      mkLoan({
+        id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500,
+        reinvestment: { enabled: true, fromLoanId: "a", amount: 2000, startDate: "2026-01" },
+      }),
+    ]);
+    const late = run([
+      mkLoan({
+        id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500,
+        reinvestment: { enabled: true, fromLoanId: "a", amount: 2000, startDate: "2030-01" },
+      }),
+    ]);
+    // Starting the reinvestment earlier can only help at least as much.
+    expect(early.loanResults[0].newTotalInterest).toBeLessThanOrEqual(late.loanResults[0].newTotalInterest);
+  });
+
+  it("reinvestment.enabled = false behaves identically to no reinvestment at all", () => {
+    const disabled = run([
+      mkLoan({
+        id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500,
+        reinvestment: { enabled: false, fromLoanId: "a", amount: 2000, startDate: "2026-01" },
+      }),
+    ]);
+    const none = run([mkLoan({ id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500 })]);
+    expect(disabled.loanResults[0]).toEqual(none.loanResults[0]);
+  });
+
+  it("slider behavior: increasing the reinvestment amount monotonically shortens payoff time", () => {
+    const amounts = [0, 500, 1000, 2000, 5000];
+    const months = amounts.map((amount) => {
+      const r = run([
+        mkLoan({
+          id: "b", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 500,
+          reinvestment: { enabled: amount > 0, fromLoanId: "a", amount, startDate: "2026-01" },
+        }),
+      ]);
+      return r.loanResults[0].newEndDate;
+    });
+    // Each larger slider value must pay off the loan no later than the previous one.
+    for (let i = 1; i < months.length; i++) {
+      expect(months[i] <= months[i - 1]).toBe(true);
+    }
+    // And the extremes must actually differ — the slider has to do something.
+    expect(months[months.length - 1]).not.toBe(months[0]);
   });
 });
 

@@ -14,10 +14,22 @@ export interface Loan {
   targetMonthlyTotal?: number;
   targetMonthlyEnabled?: boolean;
   targetMonthlyFrom?: string;
-  /** Extra kr/mån utöver min (alla lånetyper) — oberoende av kaskad */
+  /** Extra kr/mån utöver min (alla lånetyper) — manuellt, oberoende av allt annat */
   extraMonthly?: number;
   extraMonthlyEnabled?: boolean;
   extraMonthlyFrom?: string;
+  /** Manuell återinvestering: användaren väljer själv att lägga ett annat (avklarat) låns frigjorda belopp här */
+  reinvestment?: Reinvestment;
+}
+
+export interface Reinvestment {
+  enabled: boolean;
+  /** vilket lån pengarna kommer från */
+  fromLoanId: string;
+  /** kr/mån */
+  amount: number;
+  /** YYYY-MM */
+  startDate: string;
 }
 
 export interface OneTimePayment {
