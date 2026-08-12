@@ -227,6 +227,13 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
     // as the fallback target for a one-time payment that wasn't assigned
     // to a specific loan.
     const priorityIdx = active.findIndex((l) => !l.isPaidOff);
+    // Read once per month, applied against every loan below, then removed
+    // after all loans have had a chance to match it — NOT as soon as the
+    // priority-index loan is processed. Deleting on "i === priorityIdx"
+    // discarded any one-time payment aimed at a loan later in the list
+    // the moment the (unrelated) priority loan took its turn, silently
+    // dropping the payment before its actual target ever saw it.
+    const ots = oneTimeMap.get(dateStr);
 
     for (let i = 0; i < active.length; i++) {
       const loan = active[i];
@@ -243,14 +250,12 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
 
       let payment = basePay;
 
-      const ots = oneTimeMap.get(dateStr);
       if (ots) {
         for (const ot of ots) {
           if (ot.loanId === loan.id || (!ot.loanId && i === priorityIdx)) {
             payment += ot.amount;
           }
         }
-        if (i === priorityIdx) oneTimeMap.delete(dateStr);
       }
 
       const actual = Math.min(loan.currentBalance, payment);
@@ -263,6 +268,8 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
         if (!firstPaidMonth) firstPaidMonth = currentMonth;
       }
     }
+
+    if (ots) oneTimeMap.delete(dateStr);
   }
 
   let anyLoanNeverAmortizes = false;
