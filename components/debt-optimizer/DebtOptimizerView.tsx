@@ -13,8 +13,10 @@ import {
   TrendingDown,
   Layers,
   AlertTriangle,
+  CheckCircle2,
+  Info,
 } from "lucide-react";
-import { calculateExcelStrategy, emptyResult } from "@/lib/debt-optimizer/engine";
+import { calculateExcelStrategy, emptyResult, sortLoans } from "@/lib/debt-optimizer/engine";
 import type {
   Loan,
   OneTimePayment,
@@ -23,16 +25,47 @@ import type {
 } from "@/lib/debt-optimizer/types";
 
 const STRATEGY_LABELS: Record<PayoffStrategy, string> = {
-  cascade: "Kaskad",
+  cascade: "Egen ordning",
   avalanche: "Lavin",
   snowball: "Snöboll",
 };
 
 const STRATEGY_HINTS: Record<PayoffStrategy, string> = {
-  cascade: "din egna ordning · betalning flyttas till nästa lån när ett är klart",
-  avalanche: "högst ränta först · betalning flyttas till nästa när ett är klart",
-  snowball: "minsta skuld först · betalning flyttas till nästa när ett är klart",
+  cascade: "Du bestämmer själv när betalning flyttas mellan lån",
+  avalanche: "listar högst ränta först — lägg extra manuellt eller återinvestera",
+  snowball: "listar minsta skuld först — lägg extra manuellt eller återinvestera",
 };
+
+/** Vad ett lån faktiskt kostar per månad just nu, inkl. ev. extra — men inte återinvestering (visas separat, dynamiskt). */
+function loanNowTotal(loan: Loan): number {
+  const isFixed = loan.paymentStyle === "fixed_amort";
+  const extraAmt = loan.extraMonthlyEnabled ? loan.extraMonthly || 0 : 0;
+  return isFixed
+    ? (loan.targetMonthlyEnabled ? loan.targetMonthlyTotal || 0 : loan.currentMonthlyPayment) + extraAmt
+    : loan.currentMonthlyPayment + extraAmt;
+}
+
+/** Ett lån räknas som avklarat när användaren själv satt skulden till 0 (eller lägre) för ett lån som faktiskt användes. */
+function isCleared(loan: Loan): boolean {
+  return loan.balance <= 0 && loan.currentMonthlyPayment > 0;
+}
+
+function addMonthsToYYYYMM(yyyymm: string, n: number): string {
+  const [y, m] = yyyymm.split("-").map(Number);
+  const total = y * 12 + (m - 1) + n;
+  const newY = Math.floor(total / 12);
+  const newM = (total % 12) + 1;
+  return `${newY}-${String(newM).padStart(2, "0")}`;
+}
+
+function todayYYYYMM(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function todayLabel(): string {
+  return new Date().toLocaleDateString("sv-SE", { year: "numeric", month: "long", day: "numeric" });
+}
 
 function AnimatedNumber({
   value,
@@ -347,19 +380,37 @@ export function DebtOptimizerView() {
     setStrategy("cascade");
   };
 
-  // Payoff-order predecessor for each loan, per the CURRENT strategy — not
-  // just "previous in the input list", since Lavin/Snöboll reorder loans.
   const sortedResults = useMemo(
     () => [...result.loanResults].sort((a, b) => a.payoffOrder - b.payoffOrder),
     [result.loanResults]
   );
-  const prevEndDateFor = (loanId: string) => {
-    const res = sortedResults.find((r) => r.id === loanId);
-    if (!res || res.payoffOrder <= 1) return null;
-    const prev = sortedResults[res.payoffOrder - 2];
-    // A predecessor that never amortizes never frees up cash to cascade.
-    if (!prev || !prev.isFullyAmortizing) return null;
-    return prev.newEndDate;
+
+  // Manual mode: order only decides (a) the "Ordning" list and (b) which
+  // cleared loans a given loan is allowed to reinvest from (only ones
+  // earlier in the order — money can't flow "backwards").
+  const orderedLoanIds = useMemo(
+    () => sortLoans(loans, strategy).map((l) => l.id),
+    [loans, strategy]
+  );
+  const orderIndexOf = (id: string) => orderedLoanIds.indexOf(id);
+
+  const setReinvestSource = (loanId: string, sourceLoan: Loan) => {
+    updateLoan(loanId, {
+      reinvestment: {
+        enabled: true,
+        fromLoanId: sourceLoan.id,
+        amount: loanNowTotal(sourceLoan),
+        startDate: addMonthsToYYYYMM(todayYYYYMM(), 1),
+      },
+    });
+  };
+
+  const toggleReinvestSource = (loan: Loan, sourceLoan: Loan, on: boolean) => {
+    if (on) {
+      setReinvestSource(loan.id, sourceLoan);
+    } else if (loan.reinvestment) {
+      updateLoan(loan.id, { reinvestment: { ...loan.reinvestment, enabled: false } });
+    }
   };
 
   return (
@@ -441,13 +492,17 @@ export function DebtOptimizerView() {
               const res = result.loanResults.find((r) => r.id === loan.id);
               const isFixed = loan.paymentStyle === "fixed_amort";
               const extraOn = !!loan.extraMonthlyEnabled;
-              const extraAmt = extraOn ? loan.extraMonthly || 0 : 0;
-              const nowTotal = isFixed
-                ? (loan.targetMonthlyEnabled
-                    ? loan.targetMonthlyTotal || 0
-                    : loan.currentMonthlyPayment) + extraAmt
-                : loan.currentMonthlyPayment + extraAmt;
-              const prevEndDate = prevEndDateFor(loan.id);
+              const nowTotal = loanNowTotal(loan);
+              const cleared = isCleared(loan);
+              // Cleared loans earlier in the order this loan can pull money from.
+              const reinvestSources = cleared
+                ? []
+                : loans.filter(
+                    (l) =>
+                      l.id !== loan.id &&
+                      isCleared(l) &&
+                      orderIndexOf(l.id) < orderIndexOf(loan.id)
+                  );
 
               return (
                 <div
@@ -483,6 +538,20 @@ export function DebtOptimizerView() {
                       </button>
                     )}
                   </div>
+
+                  {cleared && (
+                    <div className="flex items-start gap-2 bg-emerald-950/40 border border-emerald-700/50 rounded-lg px-2.5 py-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <div className="text-[11px] text-emerald-300 leading-snug">
+                        <span className="font-bold">{loan.name || "Lånet"} avklarat</span>{" "}
+                        {todayLabel()}. Du frigör nu{" "}
+                        <span className="font-mono font-bold">
+                          {loanNowTotal(loan).toLocaleString("sv-SE")}
+                        </span>{" "}
+                        kr/mån.
+                      </div>
+                    </div>
+                  )}
 
                   {/* Style toggle */}
                   <div className="flex gap-1">
@@ -571,8 +640,12 @@ export function DebtOptimizerView() {
                           }
                           className="w-3.5 h-3.5 rounded accent-amber-400"
                         />
-                        <span className="text-[10px] text-amber-300 font-medium">
-                          Toppa till
+                        <span
+                          className="text-[10px] text-amber-300 font-medium inline-flex items-center gap-0.5"
+                          title="Detta är vad du betalar totalt varje månad för detta lån. Allt över min/mån är extra amortering."
+                        >
+                          Total betalning/mån
+                          <Info className="w-2.5 h-2.5 text-amber-300/70" />
                         </span>
                       </label>
                       {loan.targetMonthlyEnabled && (
@@ -652,13 +725,107 @@ export function DebtOptimizerView() {
                       {nowTotal > 0 ? nowTotal.toLocaleString("sv-SE") : "—"}
                     </span>{" "}
                     kr/mån
-                    {prevEndDate && (
-                      <span className="text-teal-500/70">
+                    {loan.reinvestment?.enabled && (
+                      <span className="text-emerald-500/80">
                         {" "}
-                        · +kaskad från {prevEndDate}
+                        · +{(loan.reinvestment.amount || 0).toLocaleString("sv-SE")} kr
+                        återinvesterat från {loan.reinvestment.startDate}
                       </span>
                     )}
                   </div>
+
+                  {reinvestSources.length > 0 && (
+                    <div className="space-y-1.5 bg-emerald-950/20 border border-emerald-800/40 rounded-lg px-2 py-1.5">
+                      <div className="text-[10px] font-bold text-emerald-300">
+                        Återinvestering
+                      </div>
+                      {reinvestSources.map((source) => {
+                        const active =
+                          !!loan.reinvestment?.enabled &&
+                          loan.reinvestment.fromLoanId === source.id;
+                        const maxAmount = Math.max(1, loanNowTotal(source));
+                        const amount = active
+                          ? loan.reinvestment!.amount || 0
+                          : maxAmount;
+                        return (
+                          <div key={source.id} className="space-y-1.5">
+                            <label className="flex items-center gap-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={active}
+                                onChange={(e) =>
+                                  toggleReinvestSource(loan, source, e.target.checked)
+                                }
+                                className="w-3.5 h-3.5 rounded accent-emerald-400"
+                              />
+                              <span className="text-[10px] text-emerald-200">
+                                Återinvestera{" "}
+                                <span className="font-mono font-bold">
+                                  {maxAmount.toLocaleString("sv-SE")}
+                                </span>{" "}
+                                kr från {source.name}
+                              </span>
+                            </label>
+                            {active && (
+                              <div className="pl-5 space-y-1.5">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[9px] text-slate-500 w-14 shrink-0">
+                                    Startdatum
+                                  </span>
+                                  <input
+                                    type="month"
+                                    value={loan.reinvestment!.startDate}
+                                    onChange={(e) =>
+                                      updateLoan(loan.id, {
+                                        reinvestment: {
+                                          ...loan.reinvestment!,
+                                          startDate: e.target.value,
+                                        },
+                                      })
+                                    }
+                                    className="bg-slate-950 border border-slate-700 rounded-md px-1 py-1 text-[10px] font-mono text-teal-400"
+                                  />
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[9px] text-slate-500 w-14 shrink-0">
+                                    Belopp
+                                  </span>
+                                  <input
+                                    type="range"
+                                    min={0}
+                                    max={maxAmount}
+                                    step={Math.max(1, Math.round(maxAmount / 100))}
+                                    value={amount}
+                                    onChange={(e) =>
+                                      updateLoan(loan.id, {
+                                        reinvestment: {
+                                          ...loan.reinvestment!,
+                                          amount: Number(e.target.value),
+                                        },
+                                      })
+                                    }
+                                    className="flex-1 accent-emerald-400"
+                                  />
+                                  <NumField
+                                    value={amount}
+                                    onChange={(n) =>
+                                      updateLoan(loan.id, {
+                                        reinvestment: {
+                                          ...loan.reinvestment!,
+                                          amount: Math.max(0, Math.min(maxAmount, n)),
+                                        },
+                                      })
+                                    }
+                                    className="w-16 bg-slate-950 border border-emerald-500/40 rounded-md px-1.5 py-1 text-[11px] font-mono font-bold text-emerald-300 text-center outline-none"
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
 
                   {res && !res.isFullyAmortizing && (
                     <div className="flex items-start gap-1.5 text-[10px] text-red-400 bg-red-950/30 border border-red-800/50 rounded-lg px-2 py-1.5">
@@ -889,11 +1056,9 @@ export function DebtOptimizerView() {
             </div>
 
             <p className="text-[10px] text-slate-600 text-center px-2 leading-relaxed">
-              <b>Extra/mån från [datum]</b> gäller från det datumet, varje
-              månad, oavsett strategi.{" "}
-              <b>Kaskad</b> (i alla strategier) lägger automatiskt föregående
-              låns hela betalning på nästa lån i tur när det är klart — det
-              är inte samma sak som extra från start.
+              <b>Manuellt läge:</b> Du väljer själv när och hur mycket extra
+              du betalar på varje lån. Kryssa i &quot;Återinvestera&quot; för
+              att använda pengar från avklarade lån.
             </p>
           </section>
         </div>

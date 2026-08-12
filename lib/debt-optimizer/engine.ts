@@ -39,7 +39,7 @@ export function emptyResult(): CalculationResult {
   };
 }
 
-function sortLoans(loans: Loan[], strategy: PayoffStrategy): Loan[] {
+export function sortLoans(loans: Loan[], strategy: PayoffStrategy): Loan[] {
   if (strategy === "avalanche")
     return [...loans].sort(
       (a, b) => b.interestRate - a.interestRate || a.id.localeCompare(b.id)
@@ -70,25 +70,13 @@ function validateLoan(loan: Loan): string[] {
   if (!isFinite(loan.interestRate)) errors.push(`ränta är NaN eller Infinity`);
   if (!isFinite(loan.currentMonthlyPayment))
     errors.push(`betalning är NaN eller Infinity`);
-  return errors;
-}
-
-/**
- * Monthly cash "freed" once this loan is paid off, in every strategy — the
- * base amount that was going toward it (its own extra included, but not any
- * cascade pool it may itself have received while active, or that would
- * double-count as it rolls forward loan by loan).
- */
-function freedWhenPaid(loan: Loan): number {
-  if (loan.paymentStyle === "fixed_amort") {
-    if (loan.targetMonthlyEnabled && loan.targetMonthlyTotal)
-      return loan.targetMonthlyTotal;
-    return loan.currentMonthlyPayment; // approx (amort only; interest varies)
+  if (loan.reinvestment) {
+    if (loan.reinvestment.amount < 0)
+      errors.push(`återinvestering negativ: ${loan.reinvestment.amount}`);
+    if (!isFinite(loan.reinvestment.amount))
+      errors.push(`återinvestering är NaN eller Infinity`);
   }
-  return (
-    loan.currentMonthlyPayment +
-    (loan.extraMonthlyEnabled ? loan.extraMonthly || 0 : 0)
-  );
+  return errors;
 }
 
 function monthBasePayment(
@@ -118,6 +106,14 @@ function monthBasePayment(
     ) {
       total += loan.extraMonthly || 0;
     }
+    // + optional manual reinvestment from another (cleared) loan
+    if (
+      loan.reinvestment?.enabled &&
+      (loan.reinvestment.amount || 0) > 0 &&
+      dateGte(dateStr, loan.reinvestment.startDate || startDate)
+    ) {
+      total += loan.reinvestment.amount || 0;
+    }
     return { payment: Math.min(balance + interest, total), interest };
   }
 
@@ -129,6 +125,13 @@ function monthBasePayment(
     dateGte(dateStr, loan.extraMonthlyFrom || startDate)
   ) {
     total += loan.extraMonthly || 0;
+  }
+  if (
+    loan.reinvestment?.enabled &&
+    (loan.reinvestment.amount || 0) > 0 &&
+    dateGte(dateStr, loan.reinvestment.startDate || startDate)
+  ) {
+    total += loan.reinvestment.amount || 0;
   }
   return { payment: Math.min(balance + interest, total), interest };
 }
@@ -217,15 +220,12 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
     currentMonth++;
     const dateStr = getDateFromOffset(startDate, currentMonth - 1);
 
-    // Cascade the freed monthly cash from every paid-off loan (in payoff
-    // order) onto the current highest-priority unpaid loan. This is what
-    // makes cascade/avalanche/snowball actual strategies rather than just
-    // labels — the order picks who benefits, this line does the rolling.
-    let freedPool = 0;
-    active.forEach((l) => {
-      if (l.isPaidOff) freedPool += freedWhenPaid(l);
-    });
-
+    // Manual mode: no automatic transfer of payment between loans. Money
+    // only moves from a cleared loan to another one when the user
+    // explicitly enables reinvestment on that other loan (handled inside
+    // monthBasePayment via loan.reinvestment). `priorityIdx` is kept only
+    // as the fallback target for a one-time payment that wasn't assigned
+    // to a specific loan.
     const priorityIdx = active.findIndex((l) => !l.isPaidOff);
 
     for (let i = 0; i < active.length; i++) {
@@ -242,9 +242,6 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
       loan.currentBalance += interest;
 
       let payment = basePay;
-      if (i === priorityIdx && freedPool > 0) {
-        payment += freedPool;
-      }
 
       const ots = oneTimeMap.get(dateStr);
       if (ots) {
