@@ -13,7 +13,6 @@ import {
   TrendingDown,
   Layers,
   AlertTriangle,
-  CheckCircle2,
   Info,
 } from "lucide-react";
 import { calculateExcelStrategy, emptyResult, sortLoans } from "@/lib/debt-optimizer/engine";
@@ -31,7 +30,7 @@ const STRATEGY_LABELS: Record<PayoffStrategy, string> = {
 };
 
 const STRATEGY_HINTS: Record<PayoffStrategy, string> = {
-  cascade: "Du bestämmer själv när betalning flyttas mellan lån",
+  cascade: "Du bestämmer själv vilka lån som ska betalas av först, och när pengar ska återinvesteras.",
   avalanche: "listar högst ränta först — lägg extra manuellt eller återinvestera",
   snowball: "listar minsta skuld först — lägg extra manuellt eller återinvestera",
 };
@@ -541,7 +540,7 @@ export function DebtOptimizerView() {
 
                   {cleared && (
                     <div className="flex items-start gap-2 bg-emerald-950/40 border border-emerald-700/50 rounded-lg px-2.5 py-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <span className="shrink-0" aria-hidden="true">🎉</span>
                       <div className="text-[11px] text-emerald-300 leading-snug">
                         <span className="font-bold">{loan.name || "Lånet"} avklarat</span>{" "}
                         {todayLabel()}. Du frigör nu{" "}
@@ -642,7 +641,7 @@ export function DebtOptimizerView() {
                         />
                         <span
                           className="text-[10px] text-amber-300 font-medium inline-flex items-center gap-0.5"
-                          title="Detta är vad du betalar totalt varje månad för detta lån. Allt över min/mån är extra amortering."
+                          title="Detta är vad du betalar totalt varje månad. Allt över Min/mån är extra amortering."
                         >
                           Total betalning/mån
                           <Info className="w-2.5 h-2.5 text-amber-300/70" />
@@ -689,8 +688,12 @@ export function DebtOptimizerView() {
                         }
                         className="w-3.5 h-3.5 rounded accent-amber-400"
                       />
-                      <span className="text-[10px] text-amber-300 font-medium">
-                        Extra/mån
+                      <span
+                        className="text-[10px] text-amber-300 font-medium inline-flex items-center gap-0.5"
+                        title="Läggs ovanpå Min/mån varje månad från startdatum."
+                      >
+                        Extra amortering/mån
+                        <Info className="w-2.5 h-2.5 text-amber-300/70" />
                       </span>
                     </label>
                     {extraOn && (
@@ -786,8 +789,8 @@ export function DebtOptimizerView() {
                                     className="bg-slate-950 border border-slate-700 rounded-md px-1 py-1 text-[10px] font-mono text-teal-400"
                                   />
                                 </div>
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[9px] text-slate-500 w-14 shrink-0">
+                                <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+                                  <span className="text-[9px] text-slate-500 sm:w-14 sm:shrink-0">
                                     Belopp
                                   </span>
                                   <input
@@ -1057,8 +1060,8 @@ export function DebtOptimizerView() {
 
             <p className="text-[10px] text-slate-600 text-center px-2 leading-relaxed">
               <b>Manuellt läge:</b> Du väljer själv när och hur mycket extra
-              du betalar på varje lån. Kryssa i &quot;Återinvestera&quot; för
-              att använda pengar från avklarade lån.
+              du betalar. Använd &quot;Återinvestera&quot; när ett lån är
+              klart.
             </p>
           </section>
         </div>

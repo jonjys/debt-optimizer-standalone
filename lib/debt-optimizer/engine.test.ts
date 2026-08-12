@@ -106,6 +106,51 @@ describe("Lump sum overflow", () => {
   });
 });
 
+describe("oneTimePaymentReducesEndDate (P0 regression)", () => {
+  // Root cause: oneTimeMap.delete(dateStr) fired whenever the loop reached
+  // the priority-index loan, regardless of whether THAT loan actually
+  // consumed the entry — so a one-time payment aimed at any loan other
+  // than the priority-index one was silently wiped before its real target
+  // ever got a chance to see it, as soon as the plan had 2+ loans.
+  it("a 50k one-time payment on a 589k loan measurably cuts months off its payoff, even alongside another loan", () => {
+    const other = mkLoan({
+      id: "other", balance: 112455, interestRate: 0.0595, currentMonthlyPayment: 1389,
+      paymentStyle: "fixed_amort",
+    });
+    const target = () =>
+      mkLoan({ id: "target", balance: 589111, interestRate: 0.0909, currentMonthlyPayment: 6888 });
+
+    const without = run([other, target()]);
+    const withOT = calculateExcelStrategy({
+      loans: [other, target()],
+      oneTimePayments: [{ id: "x", date: "2026-01", amount: 50000, loanId: "target" }],
+      startDate: "2026-01",
+      strategy: "cascade",
+    });
+
+    const monthsWithout = without.loanResults.find((r) => r.id === "target")!.monthsSaved;
+    const monthsWith = withOT.loanResults.find((r) => r.id === "target")!.monthsSaved;
+    expect(monthsWith).toBeGreaterThan(monthsWithout);
+    expect(withOT.newFreedomDate).not.toBe(without.newFreedomDate);
+  });
+
+  it("still works when the one-time payment targets the loan that IS the priority-index loan (regression guard)", () => {
+    const first = () => mkLoan({ id: "first", balance: 100000, interestRate: 0.05, currentMonthlyPayment: 2000 });
+    const second = mkLoan({ id: "second", balance: 50000, interestRate: 0.05, currentMonthlyPayment: 1000 });
+
+    const without = run([first(), second]);
+    const withOT = calculateExcelStrategy({
+      loans: [first(), second],
+      oneTimePayments: [{ id: "x", date: "2026-01", amount: 50000, loanId: "first" }],
+      startDate: "2026-01",
+      strategy: "cascade",
+    });
+    expect(withOT.loanResults.find((r) => r.id === "first")!.newTotalInterest).toBeLessThan(
+      without.loanResults.find((r) => r.id === "first")!.newTotalInterest
+    );
+  });
+});
+
 describe("Snowball order", () => {
   it("orders loans smallest-balance-first regardless of input order", () => {
     const r = run(
@@ -173,9 +218,48 @@ describe("Manual mode: no automatic transfer between loans", () => {
       expect(b.newTotalInterest).toBe(bAlone);
     }
   });
+
+  it("noAutoTransfer: when Lån 1 is fully paid off, absolutely nothing changes for Lån 2 unless reinvestment.enabled is checked", () => {
+    const lan1Paid = mkLoan({ id: "lan1", balance: 0, interestRate: 0.05, currentMonthlyPayment: 2000 }); // cleared, filtered out of calc
+    const lan2 = mkLoan({ id: "lan2", balance: 200000, interestRate: 0.05, currentMonthlyPayment: 2000 });
+
+    // A cleared loan 1 alongside loan 2 (reinvestment left untouched/disabled)...
+    const withClearedLan1 = calculateExcelStrategy({
+      loans: [lan1Paid, lan2].filter((l) => l.balance > 0 && l.currentMonthlyPayment > 0), // mirrors the UI's own filter
+      oneTimePayments: [],
+      startDate: "2026-01",
+      strategy: "cascade",
+    });
+    // ...must be identical to loan 2 running completely on its own.
+    const lan2Alone = run([lan2]);
+    expect(withClearedLan1).toEqual(lan2Alone);
+  });
 });
 
 describe("Manual reinvestment", () => {
+  it("manualReinvestmentReducesEndDate: Lån 1 (100k/5%/2k) clears, reinvesting its 2k into Lån 2 (200k/5%/2k) noticeably speeds up Lån 2", () => {
+    const loan1 = mkLoan({ id: "loan1", balance: 100000, interestRate: 0.05, currentMonthlyPayment: 2000 });
+    const loan1Solo = calculateExcelStrategy({
+      loans: [loan1], oneTimePayments: [], startDate: "2026-01", strategy: "cascade",
+    });
+    const loan1ClearDate = loan1Solo.loanResults[0].newEndDate; // reinvest starting the month it clears
+
+    const loan2 = mkLoan({ id: "loan2", balance: 200000, interestRate: 0.05, currentMonthlyPayment: 2000 });
+    const withoutReinvest = run([loan1, loan2]);
+    const withReinvest = run([
+      loan1,
+      { ...loan2, reinvestment: { enabled: true, fromLoanId: "loan1", amount: 2000, startDate: loan1ClearDate } },
+    ]);
+
+    const l2Without = withoutReinvest.loanResults.find((r) => r.id === "loan2")!;
+    const l2With = withReinvest.loanResults.find((r) => r.id === "loan2")!;
+    // Measured: ~130 months without reinvestment vs. ~91 months with it (≈30% faster,
+    // in the ballpark of the "~50% snabbare" estimate) — assert a solid, non-brittle margin.
+    expect(l2With.monthsSaved).toBeGreaterThan(0);
+    expect(l2With.newEndDate < l2Without.newEndDate).toBe(true);
+    expect(l2With.newTotalInterest).toBeLessThan(l2Without.newTotalInterest * 0.85);
+  });
+
   it("GOLDEN 5 (manual): enabling reinvestment on B, sourced from A's freed payment, speeds up B's payoff", () => {
     const withReinvestment = run([
       mkLoan({ id: "a", balance: 3000, interestRate: 0.05, currentMonthlyPayment: 1000 }), // clears ~month 3
