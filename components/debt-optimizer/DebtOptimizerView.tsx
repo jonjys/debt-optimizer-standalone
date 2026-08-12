@@ -393,13 +393,22 @@ export function DebtOptimizerView() {
   );
   const orderIndexOf = (id: string) => orderedLoanIds.indexOf(id);
 
-  const setReinvestSource = (loanId: string, sourceLoan: Loan) => {
+  // Base month to offer as "the month after this loan frees up cash" — either
+  // today (it's already cleared for real) or its projected payoff date from
+  // the live calculation (still being paid off, planning ahead).
+  const freesUpFromMonth = (sourceLoan: Loan): string => {
+    if (isCleared(sourceLoan)) return todayYYYYMM();
+    const sourceRes = result.loanResults.find((r) => r.id === sourceLoan.id);
+    return sourceRes?.isFullyAmortizing ? sourceRes.newEndDate : todayYYYYMM();
+  };
+
+  const setReinvestSource = (loanId: string, sourceLoan: Loan, amountOverride?: number) => {
     updateLoan(loanId, {
       reinvestment: {
         enabled: true,
         fromLoanId: sourceLoan.id,
-        amount: loanNowTotal(sourceLoan),
-        startDate: addMonthsToYYYYMM(todayYYYYMM(), 1),
+        amount: amountOverride ?? loanNowTotal(sourceLoan),
+        startDate: addMonthsToYYYYMM(freesUpFromMonth(sourceLoan), 1),
       },
     });
   };
@@ -493,15 +502,19 @@ export function DebtOptimizerView() {
               const extraOn = !!loan.extraMonthlyEnabled;
               const nowTotal = loanNowTotal(loan);
               const cleared = isCleared(loan);
-              // Cleared loans earlier in the order this loan can pull money from.
+              // Loans earlier in the order this loan can pull money from —
+              // either already cleared for real, or still being paid off but
+              // projected to amortize, so you can plan the handoff ahead of
+              // time instead of waiting until it's actually done.
               const reinvestSources = cleared
                 ? []
-                : loans.filter(
-                    (l) =>
-                      l.id !== loan.id &&
-                      isCleared(l) &&
-                      orderIndexOf(l.id) < orderIndexOf(loan.id)
-                  );
+                : loans.filter((l) => {
+                    if (l.id === loan.id) return false;
+                    if (orderIndexOf(l.id) >= orderIndexOf(loan.id)) return false;
+                    if (isCleared(l)) return true;
+                    const sourceRes = result.loanResults.find((r) => r.id === l.id);
+                    return !!sourceRes && sourceRes.isFullyAmortizing;
+                  });
 
               return (
                 <div
@@ -750,6 +763,9 @@ export function DebtOptimizerView() {
                         const amount = active
                           ? loan.reinvestment!.amount || 0
                           : maxAmount;
+                        const sourceCleared = isCleared(source);
+                        const sourceRes = result.loanResults.find((r) => r.id === source.id);
+                        const isSameAmount = active && amount === maxAmount;
                         return (
                           <div key={source.id} className="space-y-1.5">
                             <label className="flex items-center gap-1.5 cursor-pointer">
@@ -762,11 +778,24 @@ export function DebtOptimizerView() {
                                 className="w-3.5 h-3.5 rounded accent-emerald-400"
                               />
                               <span className="text-[10px] text-emerald-200">
-                                Återinvestera{" "}
-                                <span className="font-mono font-bold">
-                                  {maxAmount.toLocaleString("sv-SE")}
-                                </span>{" "}
-                                kr från {source.name}
+                                {sourceCleared ? (
+                                  <>
+                                    Återinvestera{" "}
+                                    <span className="font-mono font-bold">
+                                      {maxAmount.toLocaleString("sv-SE")}
+                                    </span>{" "}
+                                    kr från {source.name} (avklarat)
+                                  </>
+                                ) : (
+                                  <>
+                                    Använd {source.name}s frigjorda{" "}
+                                    <span className="font-mono font-bold">
+                                      {maxAmount.toLocaleString("sv-SE")}
+                                    </span>{" "}
+                                    kr/mån när det är klart
+                                    {sourceRes && ` (ca ${sourceRes.newEndDate})`}
+                                  </>
+                                )}
                               </span>
                             </label>
                             {active && (
@@ -789,9 +818,38 @@ export function DebtOptimizerView() {
                                     className="bg-slate-950 border border-slate-700 rounded-md px-1 py-1 text-[10px] font-mono text-teal-400"
                                   />
                                 </div>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[9px] text-slate-500 w-14 shrink-0">
+                                    Belopp
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      updateLoan(loan.id, {
+                                        reinvestment: { ...loan.reinvestment!, amount: maxAmount },
+                                      })
+                                    }
+                                    className={`text-[9px] px-1.5 py-0.5 rounded-full border ${
+                                      isSameAmount
+                                        ? "border-emerald-400/60 text-emerald-300 bg-emerald-500/10"
+                                        : "border-slate-700 text-slate-500"
+                                    }`}
+                                  >
+                                    Samma summa
+                                  </button>
+                                  <span
+                                    className={`text-[9px] px-1.5 py-0.5 rounded-full border ${
+                                      !isSameAmount
+                                        ? "border-emerald-400/60 text-emerald-300 bg-emerald-500/10"
+                                        : "border-slate-700 text-slate-500"
+                                    }`}
+                                  >
+                                    Fri summa
+                                  </span>
+                                </div>
                                 <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
                                   <span className="text-[9px] text-slate-500 sm:w-14 sm:shrink-0">
-                                    Belopp
+                                    &nbsp;
                                   </span>
                                   <input
                                     type="range"
