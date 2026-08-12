@@ -44,6 +44,8 @@ export interface LoanResult {
   interestSaved: number;
   monthsSaved: number;
   payoffOrder: number;
+  /** false = never pays off within the 600-month simulation window (payment doesn't outpace interest). newEndDate is "-" in that case. */
+  isFullyAmortizing: boolean;
 }
 
 export interface CalculationResult {

@@ -12,8 +12,9 @@ import {
   ArrowRight,
   TrendingDown,
   Layers,
+  AlertTriangle,
 } from "lucide-react";
-import { calculateExcelStrategy } from "@/lib/debt-optimizer/engine";
+import { calculateExcelStrategy, emptyResult } from "@/lib/debt-optimizer/engine";
 import type {
   Loan,
   OneTimePayment,
@@ -240,16 +241,24 @@ export function DebtOptimizerView() {
     }
   };
 
-  const result = useMemo(
-    () =>
-      calculateExcelStrategy({
-        loans: loans.filter((l) => l.balance > 0 && l.currentMonthlyPayment > 0),
-        oneTimePayments,
-        startDate,
-        strategy,
-      }),
-    [loans, oneTimePayments, startDate, strategy]
-  );
+  const { result, calcError } = useMemo(() => {
+    try {
+      return {
+        result: calculateExcelStrategy({
+          loans: loans.filter((l) => l.balance > 0 && l.currentMonthlyPayment > 0),
+          oneTimePayments,
+          startDate,
+          strategy,
+        }),
+        calcError: null as string | null,
+      };
+    } catch (e) {
+      return {
+        result: emptyResult(),
+        calcError: e instanceof Error ? e.message : String(e),
+      };
+    }
+  }, [loans, oneTimePayments, startDate, strategy]);
 
   const monthsBetween = (from: string, to: string) => {
     const [y1, m1] = from.split("-").map(Number);
@@ -347,7 +356,10 @@ export function DebtOptimizerView() {
   const prevEndDateFor = (loanId: string) => {
     const res = sortedResults.find((r) => r.id === loanId);
     if (!res || res.payoffOrder <= 1) return null;
-    return sortedResults[res.payoffOrder - 2]?.newEndDate ?? null;
+    const prev = sortedResults[res.payoffOrder - 2];
+    // A predecessor that never amortizes never frees up cash to cascade.
+    if (!prev || !prev.isFullyAmortizing) return null;
+    return prev.newEndDate;
   };
 
   return (
@@ -416,6 +428,13 @@ export function DebtOptimizerView() {
           </div>
         </header>
 
+        {calcError && (
+          <div className="mb-4 flex items-start gap-2 bg-red-950/40 border border-red-800/60 rounded-xl px-3 py-2.5 text-xs text-red-300">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{calcError}</span>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6">
           <section className="lg:col-span-5 space-y-3">
             {loans.map((loan) => {
@@ -446,8 +465,14 @@ export function DebtOptimizerView() {
                       }
                       className="bg-transparent font-bold text-white text-sm border-b border-transparent focus:border-teal-500 outline-none flex-1 min-w-0"
                     />
-                    <span className="text-xs font-mono text-teal-400 shrink-0">
-                      {res?.newEndDate ?? "—"}
+                    <span
+                      className={`text-xs font-mono shrink-0 ${
+                        res && !res.isFullyAmortizing
+                          ? "text-red-400"
+                          : "text-teal-400"
+                      }`}
+                    >
+                      {!res || res.newEndDate === "-" ? "—" : res.newEndDate}
                     </span>
                     {loans.length > 1 && (
                       <button
@@ -635,6 +660,16 @@ export function DebtOptimizerView() {
                     )}
                   </div>
 
+                  {res && !res.isFullyAmortizing && (
+                    <div className="flex items-start gap-1.5 text-[10px] text-red-400 bg-red-950/30 border border-red-800/50 rounded-lg px-2 py-1.5">
+                      <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+                      <span>
+                        Detta lån blir aldrig avbetalt med nuvarande
+                        betalning — den täcker inte ens räntan.
+                      </span>
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between gap-2">
                     <button
                       type="button"
@@ -648,7 +683,15 @@ export function DebtOptimizerView() {
                         <>
                           <span>{res.originalEndDate}</span>
                           <ArrowRight className="inline w-2.5 h-2.5 mx-0.5 text-slate-600" />
-                          <span className="text-teal-400">{res.newEndDate}</span>
+                          <span
+                            className={
+                              res.isFullyAmortizing
+                                ? "text-teal-400"
+                                : "text-red-400"
+                            }
+                          >
+                            {res.isFullyAmortizing ? res.newEndDate : "aldrig"}
+                          </span>
                           <span className="text-emerald-400 ml-1.5">
                             −
                             <AnimatedNumber value={res.interestSaved} />
@@ -819,13 +862,21 @@ export function DebtOptimizerView() {
                         {r.originalEndDate}
                       </span>
                       <ArrowRight className="w-3 h-3 text-slate-600" />
-                      <span className="text-teal-400 font-bold">
-                        {r.newEndDate}
+                      <span
+                        className={
+                          r.isFullyAmortizing
+                            ? "text-teal-400 font-bold"
+                            : "text-red-400 font-bold"
+                        }
+                      >
+                        {r.isFullyAmortizing ? r.newEndDate : "aldrig"}
                       </span>
-                      <span className="text-emerald-400">
-                        −
-                        <AnimatedNumber value={r.interestSaved} />
-                      </span>
+                      {r.isFullyAmortizing && (
+                        <span className="text-emerald-400">
+                          −
+                          <AnimatedNumber value={r.interestSaved} />
+                        </span>
+                      )}
                     </div>
                   </div>
                 ))}

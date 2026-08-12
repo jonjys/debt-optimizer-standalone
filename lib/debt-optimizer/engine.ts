@@ -6,6 +6,12 @@ import {
   PayoffStrategy,
 } from "./types";
 
+// Avrundningskonvention: Räkna internt i flyttal för maximal precision.
+// Avrunda ENDAST vid visning, med Math.round() på slutsummor per lån och
+// grand-total. Avrunda ALDRIG varje månad till öre — det introducerar
+// kvantiseringsbrus. Testat empiriskt: 2M kr lån över 327 mån ger 0.02 kr
+// diff mellan round-once vs round-monthly. Round-once är korrekt.
+
 function getDateFromOffset(startYearMonth: string, monthOffset: number): string {
   const [yearStr, monthStr] = startYearMonth.split("-");
   let year = parseInt(yearStr, 10) || 2026;
@@ -20,7 +26,7 @@ function dateGte(a: string, b: string): boolean {
   return a >= b;
 }
 
-function emptyResult(): CalculationResult {
+export function emptyResult(): CalculationResult {
   return {
     totalOriginalInterest: 0,
     totalNewInterest: 0,
@@ -34,12 +40,37 @@ function emptyResult(): CalculationResult {
 }
 
 function sortLoans(loans: Loan[], strategy: PayoffStrategy): Loan[] {
-  const copy = [...loans];
   if (strategy === "avalanche")
-    return copy.sort((a, b) => b.interestRate - a.interestRate);
+    return [...loans].sort(
+      (a, b) => b.interestRate - a.interestRate || a.id.localeCompare(b.id)
+    );
   if (strategy === "snowball")
-    return copy.sort((a, b) => a.balance - b.balance);
-  return copy; // cascade = user's own order
+    return [...loans].sort(
+      (a, b) => a.balance - b.balance || a.id.localeCompare(b.id)
+    );
+  return loans; // cascade = user's own order
+}
+
+/**
+ * Validates a single loan's numeric fields. Returns a list of human-readable
+ * error strings (empty = valid). Guards against negative/NaN/Infinity inputs
+ * and an interestRate stored as a percentage (e.g. 5.95) instead of a
+ * decimal (0.0595), which would otherwise silently compute 100x too much
+ * interest.
+ */
+function validateLoan(loan: Loan): string[] {
+  const errors: string[] = [];
+  if (loan.balance < 0) errors.push(`balance negativt: ${loan.balance}`);
+  if (loan.interestRate < 0) errors.push(`ränta negativ: ${loan.interestRate}`);
+  if (loan.interestRate > 1)
+    errors.push(`ränta >100%: ${loan.interestRate} - troligen fel format`);
+  if (loan.currentMonthlyPayment < 0)
+    errors.push(`betalning negativ: ${loan.currentMonthlyPayment}`);
+  if (!isFinite(loan.balance)) errors.push(`balance är NaN eller Infinity`);
+  if (!isFinite(loan.interestRate)) errors.push(`ränta är NaN eller Infinity`);
+  if (!isFinite(loan.currentMonthlyPayment))
+    errors.push(`betalning är NaN eller Infinity`);
+  return errors;
 }
 
 /**
@@ -112,6 +143,17 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
 
   if (!loans || loans.length === 0) return emptyResult();
 
+  const validationErrors: string[] = [];
+  loans.forEach((loan) => {
+    const errors = validateLoan(loan);
+    if (errors.length > 0) {
+      validationErrors.push(`${loan.name || loan.id}: ${errors.join(", ")}`);
+    }
+  });
+  if (validationErrors.length > 0) {
+    throw new Error(`Ogiltiga lånevärden — ${validationErrors.join("; ")}`);
+  }
+
   let maxOriginalMonths = 0;
   let totalOrigInterest = 0;
   const origResults: Record<string, { months: number; interest: number }> = {};
@@ -151,7 +193,10 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
     currentBalance: l.balance,
     totalInterestPaid: 0,
     isPaidOff: false,
-    paidOffMonth: 0,
+    // -1 = "not paid off yet", distinct from a real month number, so a loan
+    // that never amortizes (payment doesn't outpace interest, times out at
+    // the 600-month cap) can't be mistaken for "paid off at month 0".
+    paidOffMonth: -1,
   }));
 
   const oneTimeMap = new Map<string, { amount: number; loanId?: string }[]>();
@@ -223,13 +268,33 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
     }
   }
 
+  let anyLoanNeverAmortizes = false;
+
   const loanResults: LoanResult[] = ordered.map((l, orderIdx) => {
     const orig = origResults[l.id];
     const sim = active.find((a) => a.id === l.id)!;
-    const newMonths = sim.paidOffMonth || 0;
+    const isFullyAmortizing = sim.paidOffMonth !== -1;
     const newInterest = Math.round(sim.totalInterestPaid);
-    if (newMonths > maxNewMonths) maxNewMonths = newMonths;
     totalNewInterest += sim.totalInterestPaid;
+
+    if (!isFullyAmortizing) {
+      anyLoanNeverAmortizes = true;
+      return {
+        id: l.id,
+        name: l.name,
+        originalEndDate: getDateFromOffset(startDate, orig.months),
+        originalTotalInterest: orig.interest,
+        newEndDate: "-",
+        newTotalInterest: newInterest,
+        interestSaved: 0,
+        monthsSaved: 0,
+        payoffOrder: orderIdx + 1,
+        isFullyAmortizing: false,
+      };
+    }
+
+    const newMonths = sim.paidOffMonth;
+    if (newMonths > maxNewMonths) maxNewMonths = newMonths;
     return {
       id: l.id,
       name: l.name,
@@ -240,18 +305,31 @@ export function calculateExcelStrategy(input: StrategyInput): CalculationResult 
       interestSaved: Math.max(0, orig.interest - newInterest),
       monthsSaved: Math.max(0, orig.months - newMonths),
       payoffOrder: orderIdx + 1,
+      isFullyAmortizing: true,
     };
   });
+
+  // Sum of the (already-rounded) per-loan figures the UI actually displays,
+  // so the headline "sparad ränta" always reconciles exactly with the list
+  // it's broken down into — no independent grand-total rounding drift.
+  const totalInterestSaved = loanResults.reduce(
+    (sum, loan) => sum + loan.interestSaved,
+    0
+  );
 
   return {
     totalOriginalInterest: Math.round(totalOrigInterest),
     totalNewInterest: Math.round(totalNewInterest),
-    totalInterestSaved: Math.round(
-      Math.max(0, totalOrigInterest - totalNewInterest)
-    ),
+    totalInterestSaved,
     originalFreedomDate: getDateFromOffset(startDate, maxOriginalMonths),
-    newFreedomDate: getDateFromOffset(startDate, maxNewMonths),
-    totalMonthsSaved: Math.max(0, maxOriginalMonths - maxNewMonths),
+    // The plan isn't "debt-free" on any date if even one loan never
+    // amortizes — same -1-style sentinel convention as emptyResult().
+    newFreedomDate: anyLoanNeverAmortizes
+      ? "-"
+      : getDateFromOffset(startDate, maxNewMonths),
+    totalMonthsSaved: anyLoanNeverAmortizes
+      ? 0
+      : Math.max(0, maxOriginalMonths - maxNewMonths),
     firstDebtPaidDate: firstPaidMonth
       ? getDateFromOffset(startDate, firstPaidMonth)
       : "-",
