@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { calculateExcelStrategy, emptyResult } from "./engine";
+import { calculateExcelStrategy, emptyResult, referenceAnnuityPayment } from "./engine";
 import type { Loan, StrategyInput } from "./types";
 
 function mkLoan(over: Partial<Loan> & Pick<Loan, "id">): Loan {
@@ -473,5 +473,75 @@ describe("Determinism", () => {
     for (let i = 0; i < 100; i++) {
       expect(calculateExcelStrategy(input)).toEqual(first);
     }
+  });
+});
+
+// Exact-named regression suite requested for the P0 bug list / FRED porting
+// sign-off. Some of these duplicate coverage above under more descriptive
+// names — kept anyway so these specific identifiers are greppable and can't
+// silently regress.
+function monthsBetween(from: string, to: string): number {
+  const [y1, m1] = from.split("-").map(Number);
+  const [y2, m2] = to.split("-").map(Number);
+  return (y2 - y1) * 12 + (m2 - m1);
+}
+
+describe("P0 regression suite", () => {
+  it("oneTimePaymentReducesEndDate", () => {
+    const loan = mkLoan({ id: "a", balance: 100000, interestRate: 0.05, currentMonthlyPayment: 2000 });
+    const without = run([loan]);
+    const withOT = calculateExcelStrategy({
+      loans: [loan],
+      oneTimePayments: [{ id: "x", date: "2026-01", amount: 50000, loanId: "a" }],
+      startDate: "2026-01",
+      strategy: "cascade",
+    });
+    const monthsWithout = monthsBetween("2026-01", without.loanResults[0].newEndDate);
+    const monthsWith = monthsBetween("2026-01", withOT.loanResults[0].newEndDate);
+    expect(monthsWithout - monthsWith).toBeGreaterThanOrEqual(25);
+  });
+
+  it("manualReinvestmentIsNotAutomatic", () => {
+    // Two loans. Loan 1 pays off. Loan 2 has NO reinvestment configured
+    // (the equivalent of an empty manualReinvestments array) — its freed
+    // cash must NOT move to loan 2 on its own.
+    const loan1 = mkLoan({ id: "loan1", balance: 20000, interestRate: 0.05, currentMonthlyPayment: 2000 }); // clears fast
+    const loan2 = mkLoan({ id: "loan2", balance: 200000, interestRate: 0.05, currentMonthlyPayment: 2000 }); // no reinvestment field set
+    const withBothLoans = run([loan1, loan2]);
+    const loan2Alone = run([loan2]);
+    const l2FromPlan = withBothLoans.loanResults.find((r) => r.id === "loan2")!;
+    const l2Solo = loan2Alone.loanResults[0];
+    expect(l2FromPlan.newEndDate).toBe(l2Solo.newEndDate);
+    expect(l2FromPlan.newTotalInterest).toBe(l2Solo.newTotalInterest);
+  });
+
+  it("feesAreNotCountedAsPayment", () => {
+    const withFees = mkLoan({
+      id: "a", balance: 589111, interestRate: 0.0909, currentMonthlyPayment: 6868, feesMonthly: 1328,
+    });
+    const withoutFeesField = mkLoan({
+      id: "a", balance: 589111, interestRate: 0.0909, currentMonthlyPayment: 6868,
+    });
+    expect(run([withFees])).toEqual(run([withoutFeesField]));
+  });
+
+  it("annuityCalculationIsAccurate", () => {
+    const loan = mkLoan({ id: "a", balance: 589111, interestRate: 0.0909, currentMonthlyPayment: 6888 });
+    const r = run([loan]);
+    const months = monthsBetween("2026-01", r.loanResults[0].newEndDate);
+    expect(months).toBeGreaterThanOrEqual(138);
+    expect(months).toBeLessThanOrEqual(142);
+  });
+});
+
+describe("referenceAnnuityPayment / fee-inclusion heuristic", () => {
+  it("flags a payment that likely includes fees (589k @ 9.09%, invoice 8196 incl. 1328 fees)", () => {
+    const ref = referenceAnnuityPayment(589111, 0.0909);
+    expect(8196).toBeGreaterThan(ref * 1.15);
+  });
+
+  it("does NOT flag the correct fees-excluded payment (6868)", () => {
+    const ref = referenceAnnuityPayment(589111, 0.0909);
+    expect(6868).toBeLessThanOrEqual(ref * 1.15);
   });
 });
