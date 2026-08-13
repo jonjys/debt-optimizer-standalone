@@ -14,8 +14,16 @@ import {
   Layers,
   AlertTriangle,
   Info,
+  Check,
 } from "lucide-react";
-import { calculateExcelStrategy, emptyResult, sortLoans } from "@/lib/debt-optimizer/engine";
+import {
+  calculateExcelStrategy,
+  emptyResult,
+  sortLoans,
+  paymentLikelyIncludesFees,
+  referenceAnnuityPayment,
+} from "@/lib/debt-optimizer/engine";
+import { LOAN_PRESETS } from "@/lib/debt-optimizer/example-loans";
 import type {
   Loan,
   OneTimePayment,
@@ -348,33 +356,10 @@ export function DebtOptimizerView() {
     setOneTimePayments((prev) => prev.filter((p) => p.id !== id));
   };
 
-  const loadDemo = () => {
-    setLoans([
-      {
-        id: "nordea",
-        name: "Nordea",
-        loanType: "Rak amortering",
-        paymentStyle: "fixed_amort",
-        balance: 112455,
-        interestRate: 0.0595,
-        currentMonthlyPayment: 1389,
-        targetMonthlyTotal: 2000,
-        targetMonthlyEnabled: true,
-        targetMonthlyFrom: startDate,
-      },
-      {
-        id: "nordax",
-        name: "Nordax",
-        loanType: "Annuitet",
-        paymentStyle: "annuity",
-        balance: 589111,
-        interestRate: 0.0909,
-        currentMonthlyPayment: 6888,
-        extraMonthly: 500,
-        extraMonthlyEnabled: true,
-        extraMonthlyFrom: startDate,
-      },
-    ]);
+  const loadPreset = (presetId: string) => {
+    const preset = LOAN_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+    setLoans(preset.loans.map((l) => ({ ...l })));
     setOneTimePayments([]);
     setStrategy("cascade");
   };
@@ -446,13 +431,23 @@ export function DebtOptimizerView() {
                 className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-mono font-bold text-teal-400"
               />
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={loadDemo}
-                  className="text-[10px] text-slate-500 hover:text-teal-400 underline"
+                <select
+                  defaultValue=""
+                  onChange={(e) => {
+                    if (e.target.value) loadPreset(e.target.value);
+                    e.target.value = "";
+                  }}
+                  className="bg-transparent text-[10px] text-slate-500 hover:text-teal-400 underline outline-none cursor-pointer"
                 >
-                  Ladda exempel
-                </button>
+                  <option value="" disabled>
+                    Ladda exempel…
+                  </option>
+                  {LOAN_PRESETS.map((p) => (
+                    <option key={p.id} value={p.id} className="bg-slate-900 text-slate-200">
+                      {p.label} — {p.description}
+                    </option>
+                  ))}
+                </select>
                 <span className="text-[10px] text-slate-700">·</span>
                 <button
                   type="button"
@@ -553,7 +548,7 @@ export function DebtOptimizerView() {
 
                   {cleared && (
                     <div className="flex items-start gap-2 bg-emerald-950/40 border border-emerald-700/50 rounded-lg px-2.5 py-2">
-                      <span className="shrink-0" aria-hidden="true">🎉</span>
+                      <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
                       <div className="text-[11px] text-emerald-300 leading-snug">
                         <span className="font-bold">{loan.name || "Lånet"} avklarat</span>{" "}
                         {todayLabel()}. Du frigör nu{" "}
@@ -622,8 +617,11 @@ export function DebtOptimizerView() {
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-slate-500 block mb-0.5">
-                        {isFixed ? "Amortering" : "Min/mån"}
+                      <label
+                        className="text-[9px] text-slate-500 block mb-0.5"
+                        title="Betalning till LÅNET, exklusive avgifter och försäkring. Klistrar du in ett fakturabelopp, dra bort avgifter i fältet nedan."
+                      >
+                        {isFixed ? "Amortering" : "Min/mån"} (excl. avg.)
                       </label>
                       <NumField
                         value={loan.currentMonthlyPayment}
@@ -635,6 +633,49 @@ export function DebtOptimizerView() {
                       />
                     </div>
                   </div>
+
+                  <div className="flex items-center gap-2 bg-slate-950/50 rounded-lg px-2 py-1.5 border border-slate-800">
+                    <span
+                      className="text-[10px] text-slate-400 inline-flex items-center gap-0.5 shrink-0"
+                      title="Låneskydd, aviavgift m.m. Räknas ALDRIG med i kalkylen — bara bokföring så du kan skilja det från själva låneskulden."
+                    >
+                      Avgifter/försäkring per mån
+                      <Info className="w-2.5 h-2.5 text-slate-500" />
+                    </span>
+                    <NumField
+                      value={loan.feesMonthly ?? 0}
+                      onChange={(n) => updateLoan(loan.id, { feesMonthly: n })}
+                      placeholder="0"
+                      className="w-16 bg-slate-950 border border-slate-700 rounded-md px-1.5 py-1 text-[11px] font-mono text-slate-300 text-center outline-none"
+                    />
+                  </div>
+
+                  {paymentLikelyIncludesFees(loan.balance, loan.interestRate, loan.currentMonthlyPayment) && (
+                    <div className="flex items-start gap-1.5 text-[10px] text-amber-300 bg-amber-950/30 border border-amber-800/50 rounded-lg px-2 py-1.5">
+                      <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        Detta verkar inkludera avgifter — betalningen är
+                        ovanligt hög för skulden och räntan. Vill du räkna
+                        bort dem?
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const ref = Math.round(
+                              referenceAnnuityPayment(loan.balance, loan.interestRate)
+                            );
+                            const fees = Math.max(0, loan.currentMonthlyPayment - ref);
+                            updateLoan(loan.id, {
+                              currentMonthlyPayment: loan.currentMonthlyPayment - fees,
+                              feesMonthly: (loan.feesMonthly ?? 0) + fees,
+                            });
+                          }}
+                          className="block mt-1 underline text-amber-200 hover:text-amber-100"
+                        >
+                          Ja, dra bort skillnaden till avgifter
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Top-up for fixed amort */}
                   {isFixed && (

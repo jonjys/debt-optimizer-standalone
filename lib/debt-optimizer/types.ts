@@ -18,6 +18,8 @@ export interface Loan {
   extraMonthly?: number;
   extraMonthlyEnabled?: boolean;
   extraMonthlyFrom?: string;
+  /** Avgifter/försäkring per månad — REN INFORMATION, ingår aldrig i beräkningen. Håller isär "betalning till lånet" från fakturabeloppet. */
+  feesMonthly?: number;
   /** Manuell återinvestering: användaren väljer själv att lägga ett annat (avklarat) låns frigjorda belopp här */
   reinvestment?: Reinvestment;
 }

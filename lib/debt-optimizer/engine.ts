@@ -76,7 +76,45 @@ function validateLoan(loan: Loan): string[] {
     if (!isFinite(loan.reinvestment.amount))
       errors.push(`återinvestering är NaN eller Infinity`);
   }
+  if (loan.feesMonthly !== undefined) {
+    if (loan.feesMonthly < 0) errors.push(`avgifter negativt: ${loan.feesMonthly}`);
+    if (!isFinite(loan.feesMonthly)) errors.push(`avgifter är NaN eller Infinity`);
+  }
   return errors;
+}
+
+/**
+ * A reference "sane minimum" monthly payment for a loan, used only to warn
+ * the user when their entered payment looks like it includes fees/insurance
+ * rather than being pure loan payment. Assumes a 144-month (12-year)
+ * reference term — long enough that almost no legitimate loan payment for
+ * this balance/rate would exceed it by more than the threshold, short
+ * enough that an invoice total with fees baked in reliably does. This is a
+ * UI nudge, not a hard rule — the calculation itself never uses this value.
+ */
+export function referenceAnnuityPayment(
+  balance: number,
+  interestRate: number,
+  months = 144
+): number {
+  if (balance <= 0) return 0;
+  const r = interestRate / 12;
+  if (r === 0) return balance / months;
+  return (balance * r) / (1 - Math.pow(1 + r, -months));
+}
+
+/**
+ * True when a loan's entered payment looks like it includes fees/insurance
+ * on top of the actual loan payment (i.e. exceeds the reference annuity
+ * payment by more than 15%). Purely advisory.
+ */
+export function paymentLikelyIncludesFees(
+  balance: number,
+  interestRate: number,
+  currentMonthlyPayment: number
+): boolean {
+  if (balance <= 0 || interestRate <= 0 || currentMonthlyPayment <= 0) return false;
+  return currentMonthlyPayment > referenceAnnuityPayment(balance, interestRate) * 1.15;
 }
 
 function monthBasePayment(
