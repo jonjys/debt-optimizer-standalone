@@ -1,4 +1,4 @@
-export type PayoffStrategy = "cascade" | "avalanche" | "snowball";
+export type PayoffStrategy = "custom" | "avalanche" | "snowball";
 export type LoanPaymentStyle = "fixed_amort" | "annuity";
 
 export interface Loan {
@@ -6,39 +6,39 @@ export interface Loan {
   name: string;
   loanType: "Rak amortering" | "Annuitet";
   paymentStyle: LoanPaymentStyle;
-  balance: number;
-  interestRate: number;
-  /** fixed_amort = fast amortering; annuity = min total/mån */
-  currentMonthlyPayment: number;
-  /** fixed_amort: toppa upp till denna totalsumma */
-  targetMonthlyTotal?: number;
+  balance: number; // återstående
+  interestRate: number; // 0.0595 = 5.95%
+  currentMonthlyPayment: number; // Nordea = fast amortering 1389, Nordax = annuitet 6887.77
+
+  // NY LOGIK: "Höj betalning varje månad till VALFRI summa"
+  targetMonthlyTotal?: number; // ex 2000 för Nordea, 7000 för Nordax
   targetMonthlyEnabled?: boolean;
-  targetMonthlyFrom?: string;
-  /** Extra kr/mån utöver min (alla lånetyper) — manuellt, oberoende av allt annat */
+  targetMonthlyFrom?: string; // YYYY-MM, från när ska höjningen gälla
+
+  // Extra amortering/mån oberoende av target - "Betala extra 500"
   extraMonthly?: number;
   extraMonthlyEnabled?: boolean;
-  extraMonthlyFrom?: string;
-  /** Avgifter/försäkring per månad — REN INFORMATION, ingår aldrig i beräkningen. Håller isär "betalning till lånet" från fakturabeloppet. */
+  extraMonthlyFrom?: string; // YYYY-MM
+
+  // Avgifter - REN INFO, används aldrig i kalkyl
   feesMonthly?: number;
-  /** Manuell återinvestering: användaren väljer själv att lägga ett annat (avklarat) låns frigjorda belopp här */
+
+  // Manuell återinvestering när annat lån är klart
   reinvestment?: Reinvestment;
 }
 
 export interface Reinvestment {
   enabled: boolean;
-  /** vilket lån pengarna kommer från */
-  fromLoanId: string;
-  /** kr/mån */
-  amount: number;
-  /** YYYY-MM */
-  startDate: string;
+  fromLoanId: string; // vilket lån pengarna kommer från
+  amount: number; // kr/mån frigjort belopp att lägga här
+  startDate: string; // YYYY-MM, när ska återinvest börja (efter att fromLoan är klart)
 }
 
 export interface OneTimePayment {
   id: string;
-  date: string;
+  date: string; // YYYY-MM
   amount: number;
-  loanId?: string;
+  loanId?: string; // vilket lån, om tomt fördelas ej automatiskt (vi lägger på valt lån)
 }
 
 export interface StrategyInput {
@@ -58,7 +58,6 @@ export interface LoanResult {
   interestSaved: number;
   monthsSaved: number;
   payoffOrder: number;
-  /** false = never pays off within the 600-month simulation window (payment doesn't outpace interest). newEndDate is "-" in that case. */
   isFullyAmortizing: boolean;
 }
 
