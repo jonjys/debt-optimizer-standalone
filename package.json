@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
     "big.js": "^7.0.1",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
