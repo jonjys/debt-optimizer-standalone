@@ -1,4 +1,4 @@
-export type PayoffStrategy = "custom" | "avalanche" | "snowball";
+﻿export type PayoffStrategy = "custom" | "avalanche" | "snowball";
 export type LoanPaymentStyle = "fixed_amort" | "annuity";
 
 export interface Loan {
@@ -71,3 +71,4 @@ export interface CalculationResult {
   firstDebtPaidDate: string;
   loanResults: LoanResult[];
 }
+
