@@ -5,16 +5,12 @@ const nextConfig = {
       {
         source: "/:path*",
         headers: [
-          // Allow iframe embed from fred-platform (and localhost for dev)
+          // Allow iframe from fred-platform + vercel previews + localhost
+          // Do NOT set X-Frame-Options — it overrides CSP frame-ancestors for cross-origin embeds
           {
             key: "Content-Security-Policy",
             value:
               "frame-ancestors 'self' https://fred-platform.vercel.app https://*.vercel.app http://localhost:3000 http://localhost:3001;",
-          },
-          // Explicitly do NOT set X-Frame-Options: DENY (would block iframe)
-          {
-            key: "X-Frame-Options",
-            value: "SAMEORIGIN",
           },
         ],
       },
