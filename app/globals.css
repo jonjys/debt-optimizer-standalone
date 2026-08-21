@@ -5,3 +5,11 @@
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: #0f172a; }
 ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+
+@layer components {
+  .card { @apply rounded-[20px] border border-white/[0.06] bg-[#101015] transition duration-200 hover:-translate-y-0.5 hover:border-blue-400/20; }
+  .button { @apply inline-flex items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-5 py-3 text-xs font-medium transition hover:bg-white/[0.08]; }
+  .button-primary { @apply inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-blue-600 to-blue-400 px-6 py-3 text-sm font-semibold shadow-[0_0_35px_rgba(59,130,246,.3)] transition hover:-translate-y-0.5; }
+  .pill { @apply rounded-full border border-white/[0.06] px-4 py-2 text-xs text-white/35 transition hover:text-white; }
+  .pill.active { @apply border-blue-400/30 bg-blue-500/10 text-blue-300; }
+}
