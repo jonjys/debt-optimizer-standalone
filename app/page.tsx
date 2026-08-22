@@ -276,6 +276,12 @@ const addMonths = (ym: string, count: number) => {
   const d = new Date(y, m - 1 + count);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 };
+const monthsFromStart = (ym?: string) => {
+  if (!ym || ym === "-") return 0;
+  const [startYear, startMonth] = START.split("-").map(Number);
+  const [endYear, endMonth] = ym.split("-").map(Number);
+  return Math.max(1, (endYear - startYear) * 12 + endMonth - startMonth + 1);
+};
 
 function CountUp({ value, lang }: { value: number; lang: Lang }) {
   const [shown, setShown] = useState(0);
@@ -514,7 +520,20 @@ export default function Page() {
     scrollToApp();
   };
   const fillSample = () => {
-    setLoans(initialLoans);
+    setLoans(
+      initialLoans.map((loan) => ({
+        ...loan,
+        name:
+          loan.id === "mortgage"
+            ? lang === "sv"
+              ? "Bolån"
+              : "Mortgage"
+            : LOAN_KINDS.personal[lang],
+      })),
+    );
+    setLoanKinds({ mortgage: "mortgage", personal: "personal" });
+    setAmortKinds({ mortgage: "fixed_amort", personal: "annuity" });
+    setExpanded({ personal: true });
     setReinvestments([
       {
         fromLoanId: "personal",
@@ -623,8 +642,20 @@ export default function Page() {
               value={month(result?.newFreedomDate || "-", lang)}
             />
             <Mini
-              label={t.saved}
-              value={money(result?.totalInterestSaved || 0, lang, true)}
+              label={
+                loans.length === 1
+                  ? lang === "sv"
+                    ? "Total ränta"
+                    : "Total interest"
+                  : t.saved
+              }
+              value={money(
+                loans.length === 1
+                  ? result?.totalNewInterest || 0
+                  : result?.totalInterestSaved || 0,
+                lang,
+                true,
+              )}
             />
             <button
               onClick={addDebt}
@@ -883,6 +914,12 @@ function Today(p: any) {
 }
 
 function ResultSidebar({ lang, t, result, loans, reinvestments }: any) {
+  const singleLoan = loans.length === 1;
+  const monthsSaved = result?.totalMonthsSaved || 0;
+  const payoffMonths = monthsFromStart(result?.newFreedomDate);
+  const interestValue = singleLoan
+    ? result?.totalNewInterest || 0
+    : Math.max(0, result?.totalInterestSaved || 0);
   return (
     <aside className="space-y-3">
       <div className="relative min-h-[120px] overflow-hidden rounded-xl border border-blue-400/20 bg-blue-500/[.09] p-4 shadow-[inset_0_0_45px_rgba(59,130,246,.08)] backdrop-blur-xl">
@@ -893,17 +930,30 @@ function ResultSidebar({ lang, t, result, loans, reinvestments }: any) {
         <div className="mt-3 text-[38px] font-semibold leading-none tracking-[-.05em]">
           {month(result?.newFreedomDate || "-", lang)}
         </div>
-        <span className="mt-4 inline-flex rounded-full bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
-          {duration(result?.totalMonthsSaved || 0, lang)} {t.earlier}
-        </span>
+        {monthsSaved > 0 ? (
+          <span className="mt-4 inline-flex rounded-full bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
+            {duration(monthsSaved, lang)} {t.earlier}
+          </span>
+        ) : result?.newFreedomDate === "-" ? (
+          <span className="mt-4 inline-flex rounded-full bg-red-400/10 px-3 py-1.5 text-xs font-semibold text-red-300">
+            {lang === "sv" ? "Betalningen är för låg" : "Payment is too low"}
+          </span>
+        ) : payoffMonths > 0 ? (
+          <span className="mt-4 inline-flex rounded-full bg-blue-400/10 px-3 py-1.5 text-xs font-semibold text-blue-200">
+            {duration(payoffMonths, lang)} {lang === "sv" ? "till skuldfri" : "to debt-free"}
+          </span>
+        ) : null}
       </div>
       <div className="card p-6">
-        <span className="text-sm text-white/40">{t.saved}</span>
+        <span className="text-sm text-white/40">
+          {singleLoan
+            ? lang === "sv"
+              ? "Total ränta"
+              : "Total interest"
+            : t.saved}
+        </span>
         <div className="mt-4 text-4xl font-semibold">
-          <CountUp
-            value={Math.max(0, result?.totalInterestSaved || 0)}
-            lang={lang}
-          />
+          <CountUp value={interestValue} lang={lang} />
         </div>
       </div>
       <div className="card p-5">
@@ -924,7 +974,12 @@ function ResultSidebar({ lang, t, result, loans, reinvestments }: any) {
               </span>
             </div>
             {reinvestments
-              .filter((r: Reinvestment) => r.fromLoanId === x.id && r.enabled)
+              .filter(
+                (r: Reinvestment) =>
+                  r.fromLoanId === x.id &&
+                  r.enabled &&
+                  loans.some((loan: Loan) => loan.id === r.toLoanId),
+              )
               .map((r: Reinvestment) => (
                 <div
                   key={r.fromLoanId}
@@ -1542,7 +1597,15 @@ function FamilyLoanFields({
     </div>
   );
 }
-function SavingsVsPayoff({ lang, loanRate }: { lang: Lang; loanRate: number }) {
+function SavingsVsPayoff({
+  lang,
+  loanRate,
+  loanName,
+}: {
+  lang: Lang;
+  loanRate: number;
+  loanName: string;
+}) {
   const [cash, setCash] = useState(50000),
     [saveRate, setSaveRate] = useState(0.01),
     [debtRate, setDebtRate] = useState(loanRate),
@@ -1553,6 +1616,7 @@ function SavingsVsPayoff({ lang, loanRate }: { lang: Lang; loanRate: number }) {
     pay = cash * debtRate * factor,
     diff = pay - save,
     max = Math.max(save, pay, 1);
+  useEffect(() => setDebtRate(loanRate), [loanRate]);
   return (
     <div className="card rounded-xl p-4">
       <b>{sv ? "Ska jag amortera eller spara?" : "Save or pay off?"} 🤔</b>
@@ -1564,15 +1628,19 @@ function SavingsVsPayoff({ lang, loanRate }: { lang: Lang; loanRate: number }) {
         />
         <Field
           label={sv ? "Sparkonto ränta" : "Savings rate"}
-          value={(saveRate * 100).toFixed(1)}
-          suffix="%"
+          value={(saveRate * 100)
+            .toFixed(1)
+            .replace(".", sv ? "," : ".")}
+          suffix=" %"
           decimal
           onChange={(v) => setSaveRate(v / 100)}
         />
         <Field
-          label={sv ? "Lånets ränta" : "Loan rate"}
-          value={(debtRate * 100).toFixed(1)}
-          suffix="%"
+          label={`${sv ? "Lånets ränta" : "Loan rate"} · ${loanName}`}
+          value={(debtRate * 100)
+            .toFixed(1)
+            .replace(".", sv ? "," : ".")}
+          suffix=" %"
           decimal
           onChange={(v) => setDebtRate(v / 100)}
         />
@@ -1677,6 +1745,9 @@ function TodayV5(p: any) {
     sv = lang === "sv";
   const mortgage =
     loans.find((x: Loan) => loanKinds[x.id] === "mortgage") || loans[0];
+  const highestRateLoan = loans.reduce((highest: Loan, loan: Loan) =>
+    loan.interestRate > highest.interestRate ? loan : highest,
+  );
   const stressed = useMemo(
     () =>
       calculatePayoffSchedule({
@@ -1824,26 +1895,21 @@ function TodayV5(p: any) {
             [
               "mortgage",
               "personal",
-              "leasing",
               "family",
               "installment",
             ] as LoanKind[]
           ).map((kind) => (
             <button key={kind} onClick={() => addPreset(kind)} className="pill">
               +{" "}
-              {kind === "leasing"
+              {kind === "family"
                 ? sv
-                  ? "Leasing Toyota 5 000 kr"
-                  : "Toyota leasing SEK 5,000"
-                : kind === "family"
+                  ? "Inom familj 50k"
+                  : "Family loan 50k"
+                : kind === "installment"
                   ? sv
-                    ? "Inom familj 50k"
-                    : "Family loan 50k"
-                  : kind === "installment"
-                    ? sv
-                      ? "Avbetalning Elgiganten"
-                      : "Store installment"
-                    : LOAN_KINDS[kind][lang]}
+                    ? "Avbetalning Elgiganten"
+                    : "Store installment"
+                  : LOAN_KINDS[kind][lang]}
             </button>
           ))}
         </div>
@@ -1988,6 +2054,17 @@ function TodayV5(p: any) {
                       : "The monthly payment does not cover interest. This debt grows."}
                   </p>
                 )}
+                {loan.currentMonthlyPayment >
+                  (loan.balance * loan.interestRate) / 12 &&
+                  payoff &&
+                  !payoff.isFullyAmortizing && (
+                    <p className="mt-3 rounded-xl border border-orange-500/25 bg-orange-500/10 p-3 text-xs text-orange-200">
+                      ⚠️{" "}
+                      {sv
+                        ? "Planen tar längre än 50 år. Höj månadsbetalningen."
+                        : "This plan takes longer than 50 years. Increase the monthly payment."}
+                    </p>
+                  )}
                 <button
                   onClick={() =>
                     setExpanded((x: any) => ({ ...x, [loan.id]: !advanced }))
@@ -2027,13 +2104,15 @@ function TodayV5(p: any) {
                             ))}
                         </Select>
                       )}
-                      {rule && (
-                        <Field
-                          label={t.amount}
-                          value={number(rule.amount, lang)}
-                          onChange={(v) => updateRuleAmount(loan.id, v)}
-                        />
-                      )}
+                      {loans.length > 1 &&
+                        rule &&
+                        loans.some((target: Loan) => target.id === rule.toLoanId) && (
+                          <Field
+                            label={t.amount}
+                            value={number(rule.amount, lang)}
+                            onChange={(v) => updateRuleAmount(loan.id, v)}
+                          />
+                        )}
                     </div>
                     <p className="mt-4 text-xs text-white/40">
                       {sv ? "Du betalar totalt" : "You pay a total of"}{" "}
@@ -2069,7 +2148,8 @@ function TodayV5(p: any) {
         />
         <SavingsVsPayoff
           lang={lang}
-          loanRate={Math.max(...loans.map((x: Loan) => x.interestRate))}
+          loanRate={highestRateLoan.interestRate}
+          loanName={highestRateLoan.name}
         />
         <Fear
           lang={lang}

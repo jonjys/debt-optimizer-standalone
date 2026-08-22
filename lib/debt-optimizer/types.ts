@@ -8,7 +8,7 @@ export interface Loan {
   paymentStyle: LoanPaymentStyle;
   balance: number; // återstående
   interestRate: number; // 0.0595 = 5.95%
-  currentMonthlyPayment: number; // Nordea = fast amortering 1389, Nordax = annuitet 6887.77
+  currentMonthlyPayment: number; // dagens totala månadskostnad (ränta + amortering)
 
   // NY LOGIK: "Höj betalning varje månad till VALFRI summa"
   targetMonthlyTotal?: number; // ex 2000 för Nordea, 7000 för Nordax

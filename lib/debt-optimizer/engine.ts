@@ -34,6 +34,12 @@ function simulateOneLoan(
   const schedule: any[] = [];
   const maxMonths = 600;
   const monthlyRate = new Big(loan.interestRate).div(12);
+  // The UI asks for today's total monthly cost. For straight-line principal,
+  // derive month-one principal once, then keep that principal fixed while the
+  // interest portion declines.
+  const fixedPrincipal = new Big(loan.currentMonthlyPayment).minus(
+    new Big(loan.balance).times(monthlyRate)
+  );
 
   for (let i = 0; i < maxMonths; i++) {
     if (balance.lte(0)) break;
@@ -59,7 +65,10 @@ function simulateOneLoan(
     let payment = new Big(0);
 
     if (loan.paymentStyle === "fixed_amort") {
-      const baseAmort = new Big(loan.currentMonthlyPayment); // 1389 för Nordea
+      if (fixedPrincipal.lte(0)) {
+        return { endDate: "-", totalInterest, months: maxMonths, fully: false, schedule };
+      }
+      const baseAmort = fixedPrincipal;
 
       // 1. Räkna ordinarie total = amort + ränta
       const regularTotal = baseAmort.plus(interest);
@@ -184,10 +193,13 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
   let totalNewInterest = new Big(0);
   let globalFreedomOriginal = input.startDate;
   let globalFreedomNew = input.startDate;
+  let originalFullyAmortizing = true;
+  let newFullyAmortizing = true;
 
   // Beräkna total original interest och datum
   for (const [id, r] of originalResults) {
     totalOriginalInterest = totalOriginalInterest.plus(r.totalInterest);
+    if (r.endDate === "-") originalFullyAmortizing = false;
     if (r.endDate !== "-" && diffMonths(globalFreedomOriginal, r.endDate) > 0) {
       globalFreedomOriginal = r.endDate;
     }
@@ -230,6 +242,9 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
       const monthlyRate = new Big(loan.interestRate).div(12);
       const maxMonths = 600;
       const schedule: any[] = [];
+      const fixedPrincipal = new Big(loan.currentMonthlyPayment).minus(
+        new Big(loan.balance).times(monthlyRate)
+      );
       
       for (let i = 0; i < maxMonths; i++) {
         if (balance.lte(0)) break;
@@ -264,7 +279,10 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
         }
 
         if (loan.paymentStyle === "fixed_amort") {
-          const baseAmort = new Big(loan.currentMonthlyPayment);
+          if (fixedPrincipal.lte(0)) {
+            return { endDate: "-", totalInterest, months: maxMonths, fully: false, schedule };
+          }
+          const baseAmort = fixedPrincipal;
           const regularTotal = baseAmort.plus(interest);
           let targetExtra = new Big(0);
           if (loan.targetMonthlyEnabled && loan.targetMonthlyTotal) {
@@ -316,7 +334,8 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
       return { endDate, totalInterest, months: schedule.length, fully, schedule };
     })();
 
-    finishedDates.set(loan.id, res.endDate);
+    if (res.endDate !== "-") finishedDates.set(loan.id, res.endDate);
+    else newFullyAmortizing = false;
     const orig = originalResults.get(loan.id)!;
 
     totalNewInterest = totalNewInterest.plus(res.totalInterest);
@@ -354,13 +373,21 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
     if (!earliest || diffMonths(lr.newEndDate, earliest) < 0) earliest = lr.newEndDate;
   }
 
+  if (!originalFullyAmortizing) globalFreedomOriginal = "-";
+  if (!newFullyAmortizing) globalFreedomNew = "-";
+
+  const totalMonthsSaved =
+    globalFreedomOriginal !== "-" && globalFreedomNew !== "-"
+      ? diffMonths(globalFreedomNew, globalFreedomOriginal)
+      : 0;
+
   return {
     totalOriginalInterest: Number(totalOriginalInterest.round(0).toString()),
     totalNewInterest: Number(totalNewInterest.round(0).toString()),
     totalInterestSaved: Number(totalOriginalInterest.minus(totalNewInterest).round(0).toString()),
     originalFreedomDate: globalFreedomOriginal,
     newFreedomDate: globalFreedomNew,
-    totalMonthsSaved: diffMonths(globalFreedomNew, globalFreedomOriginal) > 0 ? diffMonths(globalFreedomNew, globalFreedomOriginal) : 0,
+    totalMonthsSaved: totalMonthsSaved > 0 ? totalMonthsSaved : 0,
     firstDebtPaidDate: earliest || globalFreedomNew,
     loanResults: loanResults.sort((a, b) => a.payoffOrder - b.payoffOrder),
   };
