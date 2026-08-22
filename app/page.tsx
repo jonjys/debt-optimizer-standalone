@@ -60,16 +60,16 @@ const LOAN_KINDS: Record<
     en: "Mortgage",
     sv: "Bolån",
     rate: 0.041,
-    helpEn: "Typical secured home loan",
-    helpSv: "Lån med bostaden som säkerhet",
+    helpEn: "Usually 3–6% — enter your current variable rate",
+    helpSv: "Vanligt 3–6 % — sätt din rörliga ränta",
   },
   personal: {
     icon: "💳",
-    en: "Personal loan",
-    sv: "Blancolån",
+    en: "Personal loan / Private",
+    sv: "Blancolån / Privat",
     rate: 0.085,
-    helpEn: "Unsecured loan",
-    helpSv: "Lån utan säkerhet",
+    helpEn: "Usually 5–25% — enter the rate in your agreement",
+    helpSv: "Vanligt 5–25 % — sätt din avtalade ränta",
   },
   car: {
     icon: "🚗",
@@ -311,7 +311,8 @@ export default function Page() {
   });
   const [fearRate, setFearRate] = useState(0.1);
   const [income, setIncome] = useState(0);
-  const [compareCost, setCompareCost] = useState({
+  const [leasingCompare, setLeasingCompare] = useState({
+    enabled: false,
     description: "Toyota Corolla leasing",
     monthly: 5000,
     months: 36,
@@ -585,8 +586,8 @@ export default function Page() {
               setFearRate={setFearRate}
               income={income}
               setIncome={setIncome}
-              compareCost={compareCost}
-              setCompareCost={setCompareCost}
+              leasingCompare={leasingCompare}
+              setLeasingCompare={setLeasingCompare}
               onPdf={handlePdf}
             />
           )}
@@ -1669,8 +1670,8 @@ function TodayV5(p: any) {
       setFearRate,
       income,
       setIncome,
-      compareCost,
-      setCompareCost,
+      leasingCompare,
+      setLeasingCompare,
       onPdf,
     } = p,
     sv = lang === "sv";
@@ -1706,12 +1707,8 @@ function TodayV5(p: any) {
           ? {
               ...x,
               name: m[lang as Lang],
-              interestRate: m.rate,
               paymentStyle: a === "fixed_amort" ? "fixed_amort" : "annuity",
               loanType: a === "fixed_amort" ? "Rak amortering" : "Annuitet",
-              ...(kind === "leasing"
-                ? { balance: 180000, currentMonthlyPayment: 5000 }
-                : {}),
             }
           : x,
       ),
@@ -1726,6 +1723,17 @@ function TodayV5(p: any) {
     );
   };
   const addPreset = (kind: LoanKind) => {
+    if (kind === "leasing") {
+      setLeasingCompare({
+        enabled: true,
+        description: "Toyota Corolla leasing",
+        monthly: 5000,
+        months: 36,
+        cash: 280000,
+        residual: 180000,
+      });
+      return;
+    }
     const id = crypto.randomUUID();
     const presets: Record<LoanKind, Partial<Loan>> = {
       mortgage: {
@@ -1747,7 +1755,7 @@ function TodayV5(p: any) {
       },
       family: {
         balance: 50_000,
-        interestRate: 0.02,
+        interestRate: 0.025,
         currentMonthlyPayment: 1_000,
       },
       installment: {
@@ -1764,12 +1772,7 @@ function TodayV5(p: any) {
     setLoanKinds((x: any) => ({ ...x, [id]: kind }));
     setAmortKinds((x: any) => ({
       ...x,
-      [id]:
-        kind === "mortgage"
-          ? "fixed_amort"
-          : kind === "leasing"
-            ? "fixed_cost"
-            : "annuity",
+      [id]: kind === "mortgage" ? "fixed_amort" : "annuity",
     }));
     setLoans((current: Loan[]) => [
       ...current,
@@ -1787,14 +1790,6 @@ function TodayV5(p: any) {
         ...presets[kind],
       },
     ]);
-    if (kind === "leasing")
-      setCompareCost({
-        description: "Toyota Corolla leasing",
-        monthly: 5000,
-        months: 36,
-        cash: 280000,
-        residual: 180000,
-      });
   };
   return (
     <main className="mx-auto grid max-w-[1280px] gap-3 px-5 py-8 pb-28 md:px-8 lg:grid-cols-[1fr_360px]">
@@ -1835,7 +1830,20 @@ function TodayV5(p: any) {
             ] as LoanKind[]
           ).map((kind) => (
             <button key={kind} onClick={() => addPreset(kind)} className="pill">
-              + {LOAN_KINDS[kind][lang]}
+              +{" "}
+              {kind === "leasing"
+                ? sv
+                  ? "Leasing Toyota 5 000 kr"
+                  : "Toyota leasing SEK 5,000"
+                : kind === "family"
+                  ? sv
+                    ? "Inom familj 50k"
+                    : "Family loan 50k"
+                  : kind === "installment"
+                    ? sv
+                      ? "Avbetalning Elgiganten"
+                      : "Store installment"
+                    : LOAN_KINDS[kind][lang]}
             </button>
           ))}
         </div>
@@ -1862,8 +1870,7 @@ function TodayV5(p: any) {
                     >
                       {(Object.keys(LOAN_KINDS) as LoanKind[]).map((k) => (
                         <option key={k} value={k}>
-                          {LOAN_KINDS[k].icon} {LOAN_KINDS[k][lang]} ·{" "}
-                          {(LOAN_KINDS[k].rate * 100).toFixed(1)}%
+                          {LOAN_KINDS[k].icon} {LOAN_KINDS[k][lang]}
                         </option>
                       ))}
                     </Select>
@@ -1938,17 +1945,32 @@ function TodayV5(p: any) {
                     value={number(loan.balance, lang)}
                     onChange={(v) => updateLoan(loan.id, "balance", v)}
                   />
-                  <Field
-                    label={t.rate}
-                    value={(loan.interestRate * 100)
-                      .toFixed(1)
-                      .replace(".", sv ? "," : ".")}
-                    suffix="%"
-                    decimal
-                    onChange={(v) =>
-                      updateLoan(loan.id, "interestRate", v / 100)
-                    }
-                  />
+                  <div>
+                    <Field
+                      label={t.rate}
+                      value={(loan.interestRate * 100)
+                        .toFixed(1)
+                        .replace(".", sv ? "," : ".")}
+                      suffix=" %"
+                      decimal
+                      onChange={(v) => {
+                        const minimum =
+                          kind === "mortgage" || kind === "personal" ? 0.1 : 0;
+                        const maximum =
+                          kind === "mortgage" ? 15 : kind === "personal" ? 30 : 100;
+                        updateLoan(
+                          loan.id,
+                          "interestRate",
+                          Math.min(maximum, Math.max(minimum, v)) / 100,
+                        );
+                      }}
+                    />
+                    {(kind === "mortgage" || kind === "personal") && (
+                      <p className="mt-1 px-1 text-[10px] text-white/25">
+                        {kind === "mortgage" ? "0,1–15 %" : "0,1–30 %"}
+                      </p>
+                    )}
+                  </div>
                   <Field
                     label={sv ? "Månadskostnad" : "Monthly cost"}
                     value={number(loan.currentMonthlyPayment, lang)}
@@ -2033,8 +2055,8 @@ function TodayV5(p: any) {
         </div>
         <UniversalCost
           lang={lang}
-          value={compareCost}
-          setValue={setCompareCost}
+          value={leasingCompare}
+          setValue={setLeasingCompare}
         />
       </section>
       <aside className="space-y-3 lg:sticky lg:top-24 lg:h-fit">
@@ -2095,63 +2117,98 @@ function UniversalCost({ lang, value, setValue }: any) {
     buyNet = value.cash - value.residual,
     diff = total - buyNet;
   return (
-    <section className="card mt-6 p-6">
-      <h2 className="text-lg font-semibold">
-        + {sv ? "Lägg till kostnad att jämföra" : "Add a cost to compare"}
-      </h2>
-      <p className="mt-1 text-xs text-white/35">
-        {sv
-          ? "Leasing Toyota — 5 000 kr/mån i 36 mån"
-          : "Toyota leasing — SEK 5,000/month for 36 months"}
-      </p>
-      <div className="mt-5 grid gap-3 sm:grid-cols-2">
-        <label>
-          <small className="label">{sv ? "Beskrivning" : "Description"}</small>
-          <input
-            spellCheck={false}
-            value={value.description}
-            onChange={(e) => set("description", e.target.value)}
-            className="input"
-          />
-        </label>
-        <Field
-          label={sv ? "Kostnad / mån" : "Cost / month"}
-          value={number(value.monthly, lang)}
-          onChange={(n) => set("monthly", n)}
-        />
-        <label className="text-xs text-white/35">
-          {sv ? "Period" : "Period"}: {value.months} {sv ? "månader" : "months"}
-          <input
-            type="range"
-            min="12"
-            max="60"
-            value={value.months}
-            onChange={(e) => set("months", +e.target.value)}
-            className="mt-4 w-full accent-blue-500"
-          />
-        </label>
-        <Field
-          label={sv ? "Köpa kontant" : "Buy cash"}
-          value={number(value.cash, lang)}
-          onChange={(n) => set("cash", n)}
-        />
-        <Field
-          label={sv ? "Bilens värde efteråt" : "Car value after"}
-          value={number(value.residual, lang)}
-          onChange={(n) => set("residual", n)}
-        />
-        <Stat
-          label={sv ? "Leasing totalt" : "Leasing total"}
-          value={money(total, lang)}
-        />
+    <section className="card mt-6 p-4 sm:p-6">
+      <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <h2 className="text-base font-semibold sm:text-lg">
+            {sv
+              ? "Jämför: Leasing vs Köpa? (valfritt)"
+              : "Compare: Lease vs Buy? (optional)"}
+          </h2>
+          {!value.enabled && (
+            <p className="mt-1 text-xs text-white/35">
+              {sv
+                ? "Håll jämförelsen separat från ditt skuldfri-datum."
+                : "Keep this comparison separate from your debt-free date."}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => set("enabled", !value.enabled)}
+          className="button shrink-0"
+          aria-expanded={value.enabled}
+        >
+          {value.enabled
+            ? sv
+              ? "Dölj jämförelse ↑"
+              : "Hide comparison ↑"
+            : sv
+              ? "+ Jämför leasing vs köpa"
+              : "+ Compare lease vs buy"}
+        </button>
       </div>
-      <div
-        className={`mt-5 rounded-xl p-4 text-sm ${diff > 0 ? "bg-orange-500/10 text-orange-200" : "bg-emerald-500/10 text-emerald-200"}`}
-      >
-        {sv
-          ? `Leasing kostar ${money(total, lang)} på ${value.months} månader. Köpa kostar netto ${money(buyNet, lang)} efter bilens värde — leasing är ${money(Math.abs(diff), lang)} ${diff > 0 ? "dyrare" : "billigare"}, men utan värderisk.`
-          : `Leasing costs ${money(total, lang)} over ${value.months} months. Buying costs ${money(buyNet, lang)} net of residual value—leasing is ${money(Math.abs(diff), lang)} ${diff > 0 ? "more expensive" : "cheaper"}, but without resale risk.`}
-      </div>
+      {value.enabled && (
+        <div className="mt-5 border-t border-white/[.06] pt-5">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label>
+              <small className="label">
+                {sv ? "Beskrivning" : "Description"}
+              </small>
+              <input
+                spellCheck={false}
+                value={value.description}
+                onChange={(e) => set("description", e.target.value)}
+                className="input"
+              />
+            </label>
+            <Field
+              label={sv ? "Kostnad / mån" : "Cost / month"}
+              value={number(value.monthly, lang)}
+              onChange={(n) => set("monthly", n)}
+            />
+            <label className="rounded-2xl border border-white/[.06] bg-black/10 p-3 text-xs text-white/35 sm:col-span-2">
+              <span className="flex justify-between gap-4">
+                <span>{sv ? "Period" : "Period"}</span>
+                <b className="text-white/70">
+                  {value.months} {sv ? "månader" : "months"}
+                </b>
+              </span>
+              <input
+                type="range"
+                min="12"
+                max="60"
+                value={value.months}
+                onChange={(e) => set("months", +e.target.value)}
+                className="mt-2 min-h-11 w-full accent-blue-500"
+              />
+            </label>
+            <Field
+              label={sv ? "Köpa kontant" : "Buy cash"}
+              value={number(value.cash, lang)}
+              onChange={(n) => set("cash", n)}
+            />
+            <Field
+              label={sv ? "Bilens värde efteråt" : "Car value after"}
+              value={number(value.residual, lang)}
+              onChange={(n) => set("residual", n)}
+            />
+            <div className="sm:col-span-2">
+              <Stat
+                label={sv ? "Leasing totalt" : "Leasing total"}
+                value={money(total, lang)}
+              />
+            </div>
+          </div>
+          <div
+            className={`mt-5 rounded-xl p-4 text-sm leading-6 ${diff > 0 ? "bg-orange-500/10 text-orange-200" : "bg-emerald-500/10 text-emerald-200"}`}
+          >
+            {sv
+              ? `Leasing kostar ${money(total, lang)} på ${value.months} mån. Köpa kostar netto ${money(buyNet, lang)} efter bilens värde — leasing är ${money(Math.abs(diff), lang)} ${diff > 0 ? "dyrare" : "billigare"}, men utan värderisk.`
+              : `Leasing costs ${money(total, lang)} over ${value.months} months. Buying costs ${money(buyNet, lang)} net of residual value—leasing is ${money(Math.abs(diff), lang)} ${diff > 0 ? "more expensive" : "cheaper"}, but without resale risk.`}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
