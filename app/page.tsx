@@ -23,7 +23,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Lang = "en" | "sv";
 type Tab = "today" | "compare" | "refinance";
@@ -323,7 +323,7 @@ export default function Page() {
   const [propertyValue, setPropertyValue] = useState(3_027_201);
   const [mortgageValue, setMortgageValue] = useState(2_128_112);
   const [bakeAmount, setBakeAmount] = useState(180_000);
-  const [toast, setToast] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
   const appRef = useRef<HTMLDivElement>(null);
   const t = COPY[lang];
 
@@ -342,57 +342,62 @@ export default function Page() {
     );
   }, [lang]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const withReinvestments = (source: Loan[]) =>
-    source.map((loan) => {
-      const rule = reinvestments.find(
-        (r) => r.enabled && r.toLoanId === loan.id,
-      );
-      return {
-        ...loan,
-        reinvestment: rule
-          ? {
-              enabled: true,
-              fromLoanId: rule.fromLoanId,
-              amount: rule.amount,
-              startDate: START,
-            }
-          : undefined,
-      };
-    });
-  const calculate = (s: PayoffStrategy) =>
-    loans.length
-      ? calculatePayoffSchedule({
-          loans: withReinvestments(loans),
-          oneTimePayments: [],
-          startDate: START,
-          strategy: s,
-        })
-      : null;
-  const result = useMemo(
-    () => calculate(strategy),
-    [loans, strategy, reinvestments],
-  ); // eslint-disable-line react-hooks/exhaustive-deps
-  const avalanche = useMemo(
-    () => calculate("avalanche"),
-    [loans, reinvestments],
-  ); // eslint-disable-line react-hooks/exhaustive-deps
-  const snowball = useMemo(() => calculate("snowball"), [loans, reinvestments]); // eslint-disable-line react-hooks/exhaustive-deps
+  const withReinvestments = useCallback(
+    (source: Loan[]) =>
+      source.map((loan) => {
+        const rule = reinvestments.find(
+          (r) => r.enabled && r.toLoanId === loan.id,
+        );
+        return {
+          ...loan,
+          reinvestment: rule
+            ? {
+                enabled: true,
+                fromLoanId: rule.fromLoanId,
+                amount: rule.amount,
+                startDate: START,
+              }
+            : undefined,
+        };
+      }),
+    [reinvestments],
+  );
+  const calculate = useCallback(
+    (s: PayoffStrategy) =>
+      loans.length
+        ? calculatePayoffSchedule({
+            loans: withReinvestments(loans),
+            oneTimePayments: [],
+            startDate: START,
+            strategy: s,
+          })
+        : null,
+    [loans, withReinvestments],
+  );
+  const result = useMemo(() => calculate(strategy), [calculate, strategy]);
+  const avalanche = useMemo(() => calculate("avalanche"), [calculate]);
+  const snowball = useMemo(() => calculate("snowball"), [calculate]);
   const personalTotal = loans
     .filter((x) => loanKinds[x.id] === "personal")
     .reduce((sum, x) => sum + x.balance, 0);
-  const setPersonalTotal = (value: number) =>
-    setLoans((current) => {
-      const target =
-        current.find((x) => loanKinds[x.id] === "personal") ||
-        current.find((x) => x.paymentStyle === "annuity");
-      return target
-        ? current.map((x) =>
-            x.id === target.id
-              ? { ...x, balance: Math.min(10_000_000, Math.max(0, value)) }
-              : x,
-          )
-        : current;
-    });
+  const setPersonalTotal = (value: number) => {
+    const safe = Math.min(10_000_000, Math.max(0, value));
+    const target = loans.find((x) => loanKinds[x.id] === "personal");
+    if (target) {
+      setLoans((current) =>
+        current.map((x) => (x.id === target.id ? { ...x, balance: safe } : x)),
+      );
+      return;
+    }
+    const personal = {
+      ...initialLoans[1],
+      name: lang === "sv" ? "Blancolån" : "Personal loan",
+      balance: safe,
+    };
+    setLoanKinds((current) => ({ ...current, personal: "personal" }));
+    setAmortKinds((current) => ({ ...current, personal: "annuity" }));
+    setLoans((current) => [...current, personal]);
+  };
   const bake = useMemo(
     () =>
       calculateBakeIn({
@@ -436,24 +441,34 @@ export default function Page() {
     const id = crypto.randomUUID();
     setLoanKinds((k) => ({ ...k, [id]: "other" }));
     setAmortKinds((k) => ({ ...k, [id]: "annuity" }));
-    setLoans((current) => [
-      ...current,
-      {
-        id,
-        name:
+    setLoans((current) => {
+      if (current.length === 0) {
+        setToast(
           lang === "sv"
-            ? `Lån ${current.length + 1}`
-            : `Debt ${current.length + 1}`,
-        loanType: "Annuitet",
-        paymentStyle: "annuity",
-        balance: 100_000,
-        interestRate: 0.05,
-        currentMonthlyPayment: 2_500,
-        extraMonthly: 0,
-        extraMonthlyEnabled: true,
-        extraMonthlyFrom: START,
-      },
-    ]);
+            ? "🎉 Bra! Lägg till fler eller klicka Fyll exempel"
+            : "🎉 Nice! Add more or load the sample",
+        );
+        window.setTimeout(() => setToast(null), 3200);
+      }
+      return [
+        ...current,
+        {
+          id,
+          name:
+            lang === "sv"
+              ? `Lån ${current.length + 1}`
+              : `Debt ${current.length + 1}`,
+          loanType: "Annuitet",
+          paymentStyle: "annuity",
+          balance: 100_000,
+          interestRate: 0.05,
+          currentMonthlyPayment: 2_500,
+          extraMonthly: 0,
+          extraMonthlyEnabled: true,
+          extraMonthlyFrom: START,
+        },
+      ];
+    });
   };
   const setRule = (from: Loan, toLoanId: string) =>
     setReinvestments((current) => [
@@ -478,7 +493,22 @@ export default function Page() {
       appRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
     );
   const startFree = () => {
-    if (!loans.length) setLoans(initialLoans);
+    if (!loans.length) {
+      const first = {
+        ...initialLoans[0],
+        name: lang === "sv" ? "Bolån" : "Mortgage",
+        extraMonthly: 0,
+      };
+      setLoans([first]);
+      setLoanKinds({ mortgage: "mortgage" });
+      setAmortKinds({ mortgage: "fixed_amort" });
+      setToast(
+        lang === "sv"
+          ? "🎉 Bra! Lägg till fler eller klicka Fyll exempel"
+          : "🎉 Nice! Add more or load the sample",
+      );
+      window.setTimeout(() => setToast(null), 3200);
+    }
     setStarted(true);
     scrollToApp();
   };
@@ -493,9 +523,26 @@ export default function Page() {
       },
     ]);
     setStarted(true);
-    setToast(true);
-    window.setTimeout(() => setToast(false), 3200);
+    setToast(
+      lang === "sv"
+        ? "Exempellån inlästa · Återinvestering aktiv"
+        : "Sample debts loaded · Reinvest demo active",
+    );
+    window.setTimeout(() => setToast(null), 3200);
     scrollToApp();
+  };
+  const handlePdf = (file?: File) => {
+    if (!file || file.type !== "application/pdf") {
+      setToast(lang === "sv" ? "Välj en PDF-fil" : "Please choose a PDF file");
+      window.setTimeout(() => setToast(null), 3200);
+      return;
+    }
+    fillSample();
+    setToast(
+      lang === "sv"
+        ? "PDF mottagen · exempeldata används tills tolkning är klar"
+        : "PDF received · sample fallback loaded",
+    );
   };
 
   return (
@@ -540,6 +587,7 @@ export default function Page() {
               setIncome={setIncome}
               compareCost={compareCost}
               setCompareCost={setCompareCost}
+              onPdf={handlePdf}
             />
           )}
           {tab === "compare" && avalanche && snowball && (
@@ -592,13 +640,18 @@ export default function Page() {
           role="status"
           className="fixed bottom-6 left-1/2 z-[70] -translate-x-1/2 rounded-full border border-emerald-400/20 bg-emerald-500/15 px-5 py-3 text-sm font-medium text-emerald-300 shadow-2xl backdrop-blur-xl"
         >
-          {lang === "sv"
-            ? "Exempellån inlästa · Återinvestering aktiv"
-            : "Sample debts loaded · Reinvest demo active"}
+          {toast}
         </div>
       )}
       <footer className="mx-auto max-w-[1280px] px-5 py-8 text-center text-[11px] text-white/25">
-        {lang === "sv" ? "All matematik körs i din webbläsare. Ingen AI, ingen spårning, ingen kostnad. Bara Big.js-beräkningar — lägg till hur många scenarier du vill." : "All math runs in your browser. No AI, no tracking, no cost. Just Big.js calculations—add as many scenarios as you want."}
+        <p>
+          {lang === "sv"
+            ? "All matematik körs i din webbläsare. Ingen spårning. Ingen kostnad. Byggd med Big.js. 🇸🇪"
+            : "All math runs in your browser. No tracking. No cost. Built with Big.js. 🇸🇪"}
+        </p>
+        <span className="mt-3 inline-flex rounded-full border border-white/[.06] px-3 py-1.5 text-white/35">
+          Coming soon on Product Hunt
+        </span>
       </footer>
     </div>
   );
@@ -1179,7 +1232,7 @@ function Landing({
             ? "Ingen registrering · 100% privat · Fungerar offline · Matematik i webbläsaren"
             : "No signup · 100% private · Works offline · Math in browser"}
         </div>
-        <h1 className="max-w-[760px] text-[42px] font-bold leading-[1.06] tracking-[-.05em] md:text-[56px] md:leading-[64px]">
+        <h1 className="max-w-[760px] text-[36px] font-bold leading-[1.06] tracking-[-.05em] md:text-[56px] md:leading-[64px]">
           {sv
             ? "Skulder som kostar förmögenhet — "
             : "Debts that cost a fortune — "}
@@ -1190,20 +1243,20 @@ function Landing({
         </h1>
         <p className="mt-7 max-w-[640px] text-[18px] leading-8 text-white/60">
           {sv
-            ? "Vilket lån som helst. Vilken ränta som helst. Lavin eller Snöboll. Återinvestera det du frigör. Allt stannar i din webbläsare."
-            : "Any loan. Any rate. Avalanche or Snowball. Reinvest what you free up. Everything stays in your browser."}
+            ? "Vilket lån som helst. Vilken ränta som helst. Välj din väg och återinvestera det du frigör. Allt stannar i din webbläsare."
+            : "Any loan. Any rate. Choose your path and reinvest what you free up. Everything stays in your browser."}
         </p>
         <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
           <button
             onClick={onStart}
-            className="inline-flex h-12 items-center justify-center rounded-xl bg-white px-6 text-base font-semibold text-[#06060A] shadow-lg transition hover:-translate-y-0.5 hover:shadow-2xl"
+            className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-white px-7 text-base font-semibold text-[#06060A] shadow-[0_0_35px_rgba(59,130,246,.25)] transition hover:-translate-y-0.5 hover:shadow-2xl sm:w-auto"
           >
-            {sv ? "Börja gratis →" : "Start free →"}
+            {sv ? "+ Lägg till ditt första lån" : "+ Add your first loan"}
           </button>
           <button
             id="fill-sample"
             onClick={onSample}
-            className="inline-flex h-12 items-center justify-center rounded-xl border border-white/[.12] bg-transparent px-6 text-base font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/[.05]"
+            className="inline-flex h-12 w-full items-center justify-center rounded-xl border border-white/[.12] bg-transparent px-6 text-base font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/[.05] sm:w-auto"
           >
             {sv ? "Fyll exempel" : "Fill sample data"}
           </button>
@@ -1269,16 +1322,19 @@ function Field({
           readOnly={readOnly}
           inputMode="decimal"
           value={value}
-          onChange={(e) =>
+          onChange={(e) => {
+            const parsed = Number(
+              e.target.value
+                .replace(/\s/g, "")
+                .replace(",", ".")
+                .replace(/[^0-9.-]/g, ""),
+            );
             onChange(
-              Number(
-                e.target.value
-                  .replace(/\s/g, "")
-                  .replace(",", ".")
-                  .replace(/[^0-9.-]/g, ""),
-              ),
-            )
-          }
+              Number.isFinite(parsed)
+                ? Math.min(10_000_000, Math.max(0, parsed))
+                : 0,
+            );
+          }}
           className="w-full bg-transparent text-base outline-none read-only:text-white/45"
         />
         <span className="text-xs text-white/25">{suffix}</span>
@@ -1326,14 +1382,267 @@ function Mini({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BestView({lang,t,cheapest,smallest,loans,setLoans}:any){
- const sv=lang==='sv',diff=Math.abs(cheapest.totalNewInterest-smallest.totalNewInterest)
- return <main className="mx-auto max-w-[1280px] px-5 py-8 md:px-10"><Title eyebrow={t.tabs.compare} title={sv?'Vad är bäst för dig?':'What works best for you?'} sub={sv?'Välj mellan motivation, lägsta kostnad eller din egen ordning.':'Choose motivation, lowest cost, or your own order.'}/><div className="mb-5 inline-flex rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-300">💰 {sv?'Sparar':'Saves'} {money(diff,lang)} {sv?'med Dyraste först':'with Highest cost first'}</div><div className="grid gap-3 md:grid-cols-3"><Choice icon="⚡" title={sv?'Betala minsta först':'Pay smallest first'} text={sv?'Snabb vinst, motivation':'Quick win and motivation'} date={month(smallest.newFreedomDate,lang)}/><Choice icon="💰" title={sv?'Betala dyraste först':'Pay highest cost first'} text={sv?'Sparar mest, matematiskt bäst':'Saves the most, mathematically best'} date={month(cheapest.newFreedomDate,lang)} best/><div className="card p-4"><div className="text-2xl">✋</div><h2 className="mt-3 font-semibold">{sv?'Egen ordning — dra för att ändra':'Your order — drag to change'}</h2><p className="mt-1 text-xs text-white/35">{sv?'Du bestämmer vad som känns viktigast':'You decide what matters most'}</p><div className="mt-4 space-y-2">{loans.map((loan:Loan,i:number)=><div key={loan.id} draggable onDragStart={e=>e.dataTransfer.setData('text/plain',String(i))} onDragOver={e=>e.preventDefault()} onDrop={e=>{const from=+e.dataTransfer.getData('text/plain');setLoans((current:Loan[])=>{const next=[...current],[item]=next.splice(from,1);next.splice(i,0,item);return next})}} className="cursor-grab rounded-xl border border-white/[.06] bg-black/15 p-3 text-sm">⠿ {loan.name}</div>)}</div></div></div></main>
+function BestView({ lang, t, cheapest, smallest, loans, setLoans }: any) {
+  const sv = lang === "sv",
+    diff = Math.abs(cheapest.totalNewInterest - smallest.totalNewInterest);
+  return (
+    <main className="mx-auto max-w-[1280px] px-5 py-8 md:px-10">
+      <Title
+        eyebrow={t.tabs.compare}
+        title={sv ? "Vad är bäst för dig?" : "What works best for you?"}
+        sub={
+          sv
+            ? "Välj mellan motivation, lägsta kostnad eller din egen ordning."
+            : "Choose motivation, lowest cost, or your own order."
+        }
+      />
+      <div className="mb-5 inline-flex rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-300">
+        💰 {sv ? "Sparar" : "Saves"} {money(diff, lang)}{" "}
+        {sv ? "med Dyraste först" : "with Highest cost first"}
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        <Choice
+          icon="⚡"
+          title={sv ? "Betala minsta först" : "Pay smallest first"}
+          text={sv ? "Snabb vinst, motivation" : "Quick win and motivation"}
+          date={month(smallest.newFreedomDate, lang)}
+        />
+        <Choice
+          icon="💰"
+          title={sv ? "Betala dyraste först" : "Pay highest cost first"}
+          text={
+            sv
+              ? "Sparar mest, matematiskt bäst"
+              : "Saves the most, mathematically best"
+          }
+          date={month(cheapest.newFreedomDate, lang)}
+          best
+        />
+        <div className="card p-4">
+          <div className="text-2xl">✋</div>
+          <h2 className="mt-3 font-semibold">
+            {sv
+              ? "Egen ordning — dra för att ändra"
+              : "Your order — drag to change"}
+          </h2>
+          <p className="mt-1 text-xs text-white/35">
+            {sv
+              ? "Du bestämmer vad som känns viktigast"
+              : "You decide what matters most"}
+          </p>
+          <div className="mt-4 space-y-2">
+            {loans.map((loan: Loan, i: number) => (
+              <div
+                key={loan.id}
+                draggable
+                onDragStart={(e) =>
+                  e.dataTransfer.setData("text/plain", String(i))
+                }
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  const from = +e.dataTransfer.getData("text/plain");
+                  setLoans((current: Loan[]) => {
+                    const next = [...current],
+                      [item] = next.splice(from, 1);
+                    next.splice(i, 0, item);
+                    return next;
+                  });
+                }}
+                className="cursor-grab rounded-xl border border-white/[.06] bg-black/15 p-3 text-sm"
+              >
+                ⠿ {loan.name}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </main>
+  );
 }
-function Choice({icon,title,text,date,best}:{icon:string,title:string,text:string,date:string,best?:boolean}){return <div className={`card p-4 ${best?'border-emerald-400/25':''}`}><div className="flex justify-between text-2xl"><span>{icon}</span>{best&&<span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[10px] font-bold text-emerald-300">BEST</span>}</div><h2 className="mt-3 font-semibold">{title}</h2><p className="mt-1 text-xs text-white/35">{text}</p><p className="mt-5 text-sm text-white/60">{date}</p></div>}
-function FamilyLoanFields({lang,rate,setRate}:{lang:Lang,rate:number,setRate:(v:number)=>void}){const [agreement,setAgreement]=useState(true),sv=lang==='sv';return <div className="ml-0 mt-3 rounded-xl border border-yellow-400/15 bg-yellow-400/[.05] p-3 md:ml-14"><div className="grid gap-3 sm:grid-cols-2"><Field label={sv?'Rimlig ränta? (Skatteverket kräver minst X%)':'Reasonable interest?'} value={(rate*100).toFixed(1).replace('.',sv?',':'.')} suffix="%" decimal onChange={v=>setRate(Math.min(.1,Math.max(0,v/100)))}/><label className="flex items-center gap-2 text-xs text-white/60"><input type="checkbox" checked={agreement} onChange={e=>setAgreement(e.target.checked)} className="accent-blue-500"/>{sv?'Skriv skuldebrev? (mall)':'Create a promissory note? (template)'}</label></div>{rate<.01&&<p className="mt-3 rounded-lg bg-yellow-400/10 p-2 text-xs text-yellow-200">⚠️ {sv?'Under 1% — Skatteverket kan klassa som gåva. Sätt minst marknadsränta + 1% eller 2,5% för att vara safe.':'Below 1% may be treated as a gift. Use a documented market-based rate.'}</p>}<p className="mt-2 text-[11px] text-white/35">{sv?'Inom familj: Ingen UC, men skriv papper. Räntan är avdragsgill om ni skriver skuldebrev. Under 1,5% kan ses som gåva av Skatteverket.':'Family loan: no credit check, but document it. Interest may be deductible with a written agreement.'}</p></div>}
-function SavingsVsPayoff({lang,loanRate}:{lang:Lang,loanRate:number}){const [cash,setCash]=useState(50000),[saveRate,setSaveRate]=useState(.01),[deduction,setDeduction]=useState(true),sv=lang==='sv',factor=deduction?.7:1,save=cash*saveRate*.7,pay=cash*loanRate*factor,diff=pay-save,max=Math.max(save,pay,1);return <div className="card rounded-xl p-4"><b>{sv?'Ska jag amortera eller spara?':'Save or pay off?'} 🤔</b><div className="mt-3 grid grid-cols-2 gap-2"><Field label={sv?'Sparpengar':'Savings'} value={number(cash,lang)} onChange={setCash}/><Field label={sv?'Sparkonto ränta':'Savings rate'} value={(saveRate*100).toFixed(1)} suffix="%" decimal onChange={v=>setSaveRate(v/100)}/><Field label={sv?'Lånets ränta':'Loan rate'} value={(loanRate*100).toFixed(1)} suffix="%" decimal onChange={()=>{}} readOnly/><label className="flex items-center gap-2 text-[11px] text-white/45"><input type="checkbox" checked={deduction} onChange={e=>setDeduction(e.target.checked)}/>{sv?'Efter 30% ränteavdrag':'After 30% deduction'}</label></div><div className="mt-4 space-y-2 text-[11px]"><Bar label={sv?'Spara':'Save'} value={save} max={max} color="#3B82F6"/><Bar label={sv?'Amortera':'Pay off'} value={pay} max={max} color="#10B981"/></div><div className={`mt-4 rounded-full px-3 py-2 text-center text-xs font-semibold ${diff>=0?'bg-emerald-400/10 text-emerald-300':'bg-blue-400/10 text-blue-300'}`}>✅ {diff>=0?(sv?`Betala av lånet — ${money(diff,lang)}/år bättre`:`Pay off — ${money(diff,lang)}/year better`):(sv?`Spara — ${money(-diff,lang)}/år bättre`:`Save — ${money(-diff,lang)}/year better`)}</div><p className="mt-2 text-center text-[10px] text-white/30">{sv?'På 5 år':'Over 5 years'}: {money(Math.abs(diff)*5,lang)} {sv?'skillnad':'difference'}</p></div>}
-function Bar({label,value,max,color}:{label:string,value:number,max:number,color:string}){return <div><div className="flex justify-between"><span>{label}</span><span>{Math.round(value).toLocaleString()} kr/yr</span></div><div className="mt-1 h-2 rounded-full bg-white/5"><div className="h-full rounded-full" style={{width:`${value/max*100}%`,background:color}}/></div></div>}
+function Choice({
+  icon,
+  title,
+  text,
+  date,
+  best,
+}: {
+  icon: string;
+  title: string;
+  text: string;
+  date: string;
+  best?: boolean;
+}) {
+  return (
+    <div className={`card p-4 ${best ? "border-emerald-400/25" : ""}`}>
+      <div className="flex justify-between text-2xl">
+        <span>{icon}</span>
+        {best && (
+          <span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[10px] font-bold text-emerald-300">
+            BEST
+          </span>
+        )}
+      </div>
+      <h2 className="mt-3 font-semibold">{title}</h2>
+      <p className="mt-1 text-xs text-white/35">{text}</p>
+      <p className="mt-5 text-sm text-white/60">{date}</p>
+    </div>
+  );
+}
+function FamilyLoanFields({
+  lang,
+  rate,
+  setRate,
+}: {
+  lang: Lang;
+  rate: number;
+  setRate: (v: number) => void;
+}) {
+  const [agreement, setAgreement] = useState(true),
+    sv = lang === "sv";
+  return (
+    <div className="ml-0 mt-3 rounded-xl border border-yellow-400/15 bg-yellow-400/[.05] p-3 md:ml-14">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field
+          label={
+            sv
+              ? "Rimlig ränta? (Skatteverket kräver minst X%)"
+              : "Reasonable interest?"
+          }
+          value={(rate * 100).toFixed(1).replace(".", sv ? "," : ".")}
+          suffix="%"
+          decimal
+          onChange={(v) => setRate(Math.min(0.1, Math.max(0, v / 100)))}
+        />
+        <label className="flex items-center gap-2 text-xs text-white/60">
+          <input
+            type="checkbox"
+            checked={agreement}
+            onChange={(e) => setAgreement(e.target.checked)}
+            className="accent-blue-500"
+          />
+          {sv
+            ? "Skriv skuldebrev? (mall)"
+            : "Create a promissory note? (template)"}
+        </label>
+      </div>
+      {rate < 0.01 && (
+        <p className="mt-3 rounded-lg bg-yellow-400/10 p-2 text-xs text-yellow-200">
+          ⚠️{" "}
+          {sv
+            ? "Under 1% — Skatteverket kan klassa som gåva. Sätt minst marknadsränta + 1% eller 2,5% för att vara safe."
+            : "Below 1% may be treated as a gift. Use a documented market-based rate."}
+        </p>
+      )}
+      <p className="mt-2 text-[11px] text-white/35">
+        {sv
+          ? "Inom familj: Ingen UC, men skriv papper. Räntan är avdragsgill om ni skriver skuldebrev. Under 1,5% kan ses som gåva av Skatteverket."
+          : "Family loan: no credit check, but document it. Interest may be deductible with a written agreement."}
+      </p>
+    </div>
+  );
+}
+function SavingsVsPayoff({ lang, loanRate }: { lang: Lang; loanRate: number }) {
+  const [cash, setCash] = useState(50000),
+    [saveRate, setSaveRate] = useState(0.01),
+    [debtRate, setDebtRate] = useState(loanRate),
+    [deduction, setDeduction] = useState(true),
+    sv = lang === "sv",
+    factor = deduction ? 0.7 : 1,
+    save = cash * saveRate * 0.7,
+    pay = cash * debtRate * factor,
+    diff = pay - save,
+    max = Math.max(save, pay, 1);
+  return (
+    <div className="card rounded-xl p-4">
+      <b>{sv ? "Ska jag amortera eller spara?" : "Save or pay off?"} 🤔</b>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <Field
+          label={sv ? "Sparpengar" : "Savings"}
+          value={number(cash, lang)}
+          onChange={setCash}
+        />
+        <Field
+          label={sv ? "Sparkonto ränta" : "Savings rate"}
+          value={(saveRate * 100).toFixed(1)}
+          suffix="%"
+          decimal
+          onChange={(v) => setSaveRate(v / 100)}
+        />
+        <Field
+          label={sv ? "Lånets ränta" : "Loan rate"}
+          value={(debtRate * 100).toFixed(1)}
+          suffix="%"
+          decimal
+          onChange={(v) => setDebtRate(v / 100)}
+        />
+        <label className="flex items-center gap-2 text-[11px] text-white/45">
+          <input
+            type="checkbox"
+            checked={deduction}
+            onChange={(e) => setDeduction(e.target.checked)}
+          />
+          {sv ? "Efter 30% ränteavdrag" : "After 30% deduction"}
+        </label>
+      </div>
+      <div className="mt-4 space-y-2 text-[11px]">
+        <Bar
+          label={sv ? "Spara" : "Save"}
+          value={save}
+          max={max}
+          color="#3B82F6"
+        />
+        <Bar
+          label={sv ? "Amortera" : "Pay off"}
+          value={pay}
+          max={max}
+          color="#10B981"
+        />
+      </div>
+      <div
+        className={`mt-4 rounded-full px-3 py-2 text-center text-xs font-semibold ${diff >= 0 ? "bg-emerald-400/10 text-emerald-300" : "bg-blue-400/10 text-blue-300"}`}
+      >
+        ✅{" "}
+        {diff >= 0
+          ? sv
+            ? `Betala av lånet — ${money(diff, lang)}/år bättre`
+            : `Pay off — ${money(diff, lang)}/year better`
+          : sv
+            ? `Spara — ${money(-diff, lang)}/år bättre`
+            : `Save — ${money(-diff, lang)}/year better`}
+      </div>
+      <p className="mt-2 text-center text-[10px] text-white/30">
+        {sv ? "På 5 år" : "Over 5 years"}: {money(Math.abs(diff) * 5, lang)}{" "}
+        {sv ? "skillnad" : "difference"}
+      </p>
+    </div>
+  );
+}
+function Bar({
+  label,
+  value,
+  max,
+  color,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  color: string;
+}) {
+  return (
+    <div>
+      <div className="flex justify-between">
+        <span>{label}</span>
+        <span>{Math.round(value).toLocaleString()} kr/yr</span>
+      </div>
+      <div className="mt-1 h-2 rounded-full bg-white/5">
+        <div
+          className="h-full rounded-full"
+          style={{ width: `${(value / max) * 100}%`, background: color }}
+        />
+      </div>
+    </div>
+  );
+}
 
 function TodayV5(p: any) {
   const lang: Lang = p.lang;
@@ -1362,6 +1671,7 @@ function TodayV5(p: any) {
       setIncome,
       compareCost,
       setCompareCost,
+      onPdf,
     } = p,
     sv = lang === "sv";
   const mortgage =
@@ -1415,6 +1725,77 @@ function TodayV5(p: any) {
       a === "fixed_amort" ? "fixed_amort" : "annuity",
     );
   };
+  const addPreset = (kind: LoanKind) => {
+    const id = crypto.randomUUID();
+    const presets: Record<LoanKind, Partial<Loan>> = {
+      mortgage: {
+        balance: 2_128_112,
+        interestRate: 0.041,
+        currentMonthlyPayment: 8_400,
+        paymentStyle: "fixed_amort",
+        loanType: "Rak amortering",
+      },
+      personal: {
+        balance: 180_000,
+        interestRate: 0.085,
+        currentMonthlyPayment: 3_900,
+      },
+      leasing: {
+        balance: 180_000,
+        interestRate: 0,
+        currentMonthlyPayment: 5_000,
+      },
+      family: {
+        balance: 50_000,
+        interestRate: 0.02,
+        currentMonthlyPayment: 1_000,
+      },
+      installment: {
+        balance: 24_000,
+        interestRate: 0,
+        currentMonthlyPayment: 1_000,
+      },
+      car: {},
+      student: {},
+      credit: {},
+      other: {},
+    };
+    const meta = LOAN_KINDS[kind];
+    setLoanKinds((x: any) => ({ ...x, [id]: kind }));
+    setAmortKinds((x: any) => ({
+      ...x,
+      [id]:
+        kind === "mortgage"
+          ? "fixed_amort"
+          : kind === "leasing"
+            ? "fixed_cost"
+            : "annuity",
+    }));
+    setLoans((current: Loan[]) => [
+      ...current,
+      {
+        id,
+        name: meta[lang],
+        loanType: "Annuitet",
+        paymentStyle: "annuity",
+        balance: 100_000,
+        interestRate: meta.rate,
+        currentMonthlyPayment: 2_500,
+        extraMonthly: 0,
+        extraMonthlyEnabled: true,
+        extraMonthlyFrom: START,
+        ...presets[kind],
+      },
+    ]);
+    if (kind === "leasing")
+      setCompareCost({
+        description: "Toyota Corolla leasing",
+        monthly: 5000,
+        months: 36,
+        cash: 280000,
+        residual: 180000,
+      });
+  };
   return (
     <main className="mx-auto grid max-w-[1280px] gap-3 px-5 py-8 pb-28 md:px-8 lg:grid-cols-[1fr_360px]">
       <section>
@@ -1432,15 +1813,8 @@ function TodayV5(p: any) {
                 📎 {sv ? "Bifoga lånebesked PDF" : "Attach loan PDF"}
                 <input
                   type="file"
-                  accept="application/pdf"
                   className="hidden"
-                  onChange={() => {
-                    setLoans(initialLoans);
-                    setLoanKinds({
-                      mortgage: "mortgage",
-                      personal: "personal",
-                    });
-                  }}
+                  onChange={(e) => onPdf(e.target.files?.[0])}
                 />
               </label>
               <button onClick={addDebt} className="button">
@@ -1450,6 +1824,21 @@ function TodayV5(p: any) {
             </div>
           }
         />
+        <div className="mb-3 flex flex-wrap gap-2">
+          {(
+            [
+              "mortgage",
+              "personal",
+              "leasing",
+              "family",
+              "installment",
+            ] as LoanKind[]
+          ).map((kind) => (
+            <button key={kind} onClick={() => addPreset(kind)} className="pill">
+              + {LOAN_KINDS[kind][lang]}
+            </button>
+          ))}
+        </div>
         <div className="space-y-3">
           {loans.map((loan: Loan) => {
             const kind: LoanKind = loanKinds[loan.id] || "other",
@@ -1518,7 +1907,7 @@ function TodayV5(p: any) {
                 )}
                 <div className="ml-0 mt-4 max-w-sm md:ml-14">
                   <Select
-                    label={sv ? "Amorteringstyp" : "Repayment type"}
+                    label={sv ? "Hur betalar du? ⓘ" : "How do you pay? ⓘ"}
                     value={amortKinds[loan.id] || "annuity"}
                     onChange={(v) => changeAmort(loan, v as AmortKind)}
                   >
@@ -1568,6 +1957,15 @@ function TodayV5(p: any) {
                     }
                   />
                 </div>
+                {loan.currentMonthlyPayment <=
+                  (loan.balance * loan.interestRate) / 12 && (
+                  <p className="mt-3 rounded-xl border border-red-500/25 bg-red-500/10 p-3 text-xs text-red-300">
+                    ⚠️{" "}
+                    {sv
+                      ? "Månadskostnaden täcker inte räntan. Skulden växer."
+                      : "The monthly payment does not cover interest. This debt grows."}
+                  </p>
+                )}
                 <button
                   onClick={() =>
                     setExpanded((x: any) => ({ ...x, [loan.id]: !advanced }))
@@ -1590,21 +1988,23 @@ function TodayV5(p: any) {
                         value={number(loan.extraMonthly || 0, lang)}
                         onChange={(v) => updateLoan(loan.id, "extraMonthly", v)}
                       />
-                      <Select
-                        label={`${t.when} ${loan.name} ${month(payoff?.newEndDate || "-", lang)} ${t.paid}`}
-                        value={rule?.toLoanId || ""}
-                        onChange={(v) => setRule(loan, v)}
-                      >
-                        <option value="">{t.none}</option>
-                        {loans
-                          .filter((x: Loan) => x.id !== loan.id)
-                          .map((x: Loan) => (
-                            <option key={x.id} value={x.id}>
-                              {sv ? "Lägg till i " : "Add to "}
-                              {x.name}
-                            </option>
-                          ))}
-                      </Select>
+                      {loans.length > 1 && (
+                        <Select
+                          label={`${t.when} ${loan.name} ${month(payoff?.newEndDate || "-", lang)} ${t.paid}`}
+                          value={rule?.toLoanId || ""}
+                          onChange={(v) => setRule(loan, v)}
+                        >
+                          <option value="">{t.none}</option>
+                          {loans
+                            .filter((x: Loan) => x.id !== loan.id)
+                            .map((x: Loan) => (
+                              <option key={x.id} value={x.id}>
+                                {sv ? "Lägg till i " : "Add to "}
+                                {x.name}
+                              </option>
+                            ))}
+                        </Select>
+                      )}
                       {rule && (
                         <Field
                           label={t.amount}
@@ -1645,7 +2045,10 @@ function TodayV5(p: any) {
           loans={loans}
           reinvestments={reinvestments}
         />
-        <SavingsVsPayoff lang={lang} loanRate={Math.max(...loans.map((x:Loan)=>x.interestRate))} />
+        <SavingsVsPayoff
+          lang={lang}
+          loanRate={Math.max(...loans.map((x: Loan) => x.interestRate))}
+        />
         <Fear
           lang={lang}
           rate={fearRate}
@@ -1763,7 +2166,8 @@ function Fear({
   setIncome,
   monthly,
 }: any) {
-  const [incomeDrop,setIncomeDrop]=useState(20),[scenarios,setScenarios]=useState<number[]>([])
+  const [incomeDrop, setIncomeDrop] = useState(20),
+    [scenarios, setScenarios] = useState<number[]>([]);
   const sv = lang === "sv",
     monthlyShock = (mortgage.balance * (rate / 100)) / 12,
     interestShock = Math.max(
@@ -1774,7 +2178,17 @@ function Fear({
     <div className="card rounded-xl p-3">
       <div className="flex items-center justify-between">
         <b>{sv ? "Farhågor" : "What if"} 🔮</b>
-        <input type="number" min="0.1" max="20" step="0.1" value={rate} onChange={(e)=>setRate(Math.min(20,Math.max(.1,+e.target.value)))} className="h-8 w-20 rounded-lg border border-white/10 bg-black/20 px-2 text-right text-xs text-orange-300 outline-none" />
+        <input
+          type="number"
+          min="0.1"
+          max="20"
+          step="0.1"
+          value={rate}
+          onChange={(e) =>
+            setRate(Math.min(20, Math.max(0.1, +e.target.value)))
+          }
+          className="h-8 w-20 rounded-lg border border-white/10 bg-black/20 px-2 text-right text-xs text-orange-300 outline-none"
+        />
       </div>
       <p className="mt-4 text-xs text-white/40">
         {sv ? "Om räntan går upp" : "If rates increase"} +{rate}%
@@ -1795,7 +2209,7 @@ function Fear({
             onClick={() => setRate(n)}
             className={`pill ${rate === n ? "active" : ""}`}
           >
-            +{n.toFixed(n<1?1:0)}%
+            +{n.toFixed(n < 1 ? 1 : 0)}%
           </button>
         ))}
       </div>
@@ -1819,7 +2233,18 @@ function Fear({
           className="input mt-2"
         />
       </label>
-      <label className="mt-3 block text-xs text-white/35">{sv?'Om inkomsten går ner':'If income drops'} {incomeDrop}%<input type="range" min="10" max="50" step="5" value={incomeDrop} onChange={e=>setIncomeDrop(+e.target.value)} className="mt-2 w-full accent-red-500"/></label>
+      <label className="mt-3 block text-xs text-white/35">
+        {sv ? "Om inkomsten går ner" : "If income drops"} {incomeDrop}%
+        <input
+          type="range"
+          min="10"
+          max="50"
+          step="5"
+          value={incomeDrop}
+          onChange={(e) => setIncomeDrop(+e.target.value)}
+          className="mt-2 w-full accent-red-500"
+        />
+      </label>
       {income > 0 && monthly / income > 0.6 && (
         <p className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
           {sv
@@ -1827,7 +2252,12 @@ function Fear({
             : "Outflow exceeds 60% of income. Could you handle a 20% income drop?"}
         </p>
       )}
-      <button onClick={()=>setScenarios(x=>[...x,rate])} className="button mt-3 w-full">+ {sv?'Lägg till scenario':'Add scenario'} ({scenarios.length})</button>
+      <button
+        onClick={() => setScenarios((x) => [...x, rate])}
+        className="button mt-3 w-full"
+      >
+        + {sv ? "Lägg till scenario" : "Add scenario"} ({scenarios.length})
+      </button>
     </div>
   );
 }
@@ -1876,7 +2306,9 @@ function RefinanceV5({
             <Field
               label={t.personal}
               value={number(personalTotal, lang)}
-              onChange={(n) => setPersonalTotal(Math.min(10_000_000,Math.max(0,n)))}
+              onChange={(n) =>
+                setPersonalTotal(Math.min(10_000_000, Math.max(0, n)))
+              }
             />
           </div>
           <div className="mt-8 flex items-end gap-3">
@@ -1885,7 +2317,7 @@ function RefinanceV5({
                 label={t.baked}
                 value={number(bakeAmount, lang)}
                 onChange={(n) =>
-                  setBakeAmount(Math.min(1000000, Math.max(1, n)))
+                  setBakeAmount(Math.min(1000000, Math.max(0, n)))
                 }
               />
             </div>
@@ -1898,7 +2330,7 @@ function RefinanceV5({
           </div>
           <input
             type="range"
-            min="1"
+            min="0"
             max={max}
             value={Math.min(bakeAmount, max)}
             onChange={(e) => setBakeAmount(+e.target.value)}
