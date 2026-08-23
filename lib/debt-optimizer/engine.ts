@@ -10,6 +10,110 @@ interface StrategyInput {
   strategy: Strategy;
 }
 
+/**
+ * Termen (i månader) som fee-heuristiken jämför mot. Ett typiskt svenskt
+ * blancolån löper på 15 år, så en faktura som ligger mer än 15 % över
+ * annuiteten för den termen innehåller nästan alltid aviavgifter utöver
+ * ränta och amortering.
+ */
+export const FEE_HEURISTIC_TERM_MONTHS = 180;
+
+/** Annuitet (rak månadsbetalning) för ett lån — referensvärde, ingen simulering. */
+export function referenceAnnuityPayment(
+  balance: number,
+  annualRate: number,
+  months: number = FEE_HEURISTIC_TERM_MONTHS,
+): number {
+  if (!(balance > 0) || !(months > 0)) return 0;
+  const r = annualRate / 12;
+  if (r === 0) return balance / months;
+  const growth = Math.pow(1 + r, months);
+  return (balance * r * growth) / (growth - 1);
+}
+
+/**
+ * Sant när månadsbeloppet ligger så långt över annuiteten att det rimligen
+ * innehåller avgifter. Används för att varna användaren att hen skrivit in
+ * fakturasumman i stället för ränta + amortering — avgifter får aldrig
+ * räknas som betalning i kalkylen (P0).
+ */
+export function paymentLikelyIncludesFees(
+  balance: number,
+  annualRate: number,
+  payment: number,
+  months: number = FEE_HEURISTIC_TERM_MONTHS,
+): boolean {
+  const reference = referenceAnnuityPayment(balance, annualRate, months);
+  return reference > 0 && payment > reference * 1.15;
+}
+
+/** Resultatet för en plan helt utan lån: inget kvar att betala av. */
+export function emptyResult(startDate: string): CalculationResult {
+  return {
+    totalOriginalInterest: 0,
+    totalNewInterest: 0,
+    totalInterestSaved: 0,
+    originalFreedomDate: startDate,
+    newFreedomDate: startDate,
+    totalMonthsSaved: 0,
+    firstDebtPaidDate: startDate,
+    loanResults: [],
+  };
+}
+
+const NUMERIC_LOAN_FIELDS = [
+  "balance",
+  "interestRate",
+  "currentMonthlyPayment",
+  "targetMonthlyTotal",
+  "extraMonthly",
+  "feesMonthly",
+] as const;
+
+/**
+ * Vaktar mot indata som annars tyst producerar nonsens-siffror. Den
+ * vanligaste i praktiken är ränta angiven i procent (5.95) i stället för
+ * decimalform (0.0595) — utan den här kontrollen räknar motorn glatt med
+ * 595 % ränta och visar ett skuldfri-datum som aldrig inträffar.
+ */
+function validateLoan(loan: Loan): void {
+  for (const field of NUMERIC_LOAN_FIELDS) {
+    const value = loan[field];
+    if (value === undefined || value === null) continue;
+    if (!Number.isFinite(value)) {
+      throw new Error(`Lån "${loan.id}": ${field} är NaN eller Infinity`);
+    }
+  }
+  if (loan.reinvestment && !Number.isFinite(loan.reinvestment.amount)) {
+    throw new Error(`Lån "${loan.id}": reinvestment.amount är NaN eller Infinity`);
+  }
+  if (loan.balance < 0) throw new Error(`Lån "${loan.id}": balance negativt`);
+  if (loan.interestRate < 0) throw new Error(`Lån "${loan.id}": ränta negativ`);
+  if (loan.interestRate > 1) {
+    throw new Error(
+      `Lån "${loan.id}": ränta >100% (${loan.interestRate}) — angavs den i procent i stället för decimalform?`,
+    );
+  }
+  if (loan.currentMonthlyPayment < 0) {
+    throw new Error(`Lån "${loan.id}": betalning negativ`);
+  }
+  if (loan.reinvestment && loan.reinvestment.amount < 0) {
+    throw new Error(`Lån "${loan.id}": reinvestment.amount negativ`);
+  }
+}
+
+function validateInput(input: StrategyInput): void {
+  for (const loan of input.loans) validateLoan(loan);
+  for (const otp of input.oneTimePayments) {
+    if (!Number.isFinite(otp.amount)) {
+      throw new Error(`Engångsbetalning "${otp.id}": belopp är NaN eller Infinity`);
+    }
+    if (otp.amount < 0) {
+      throw new Error(`Engångsbetalning "${otp.id}": belopp negativt`);
+    }
+  }
+}
+
 function addMonths(ym: string, add: number): string {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y, m - 1 + add, 1);
@@ -138,14 +242,21 @@ function simulateOneLoan(
   }
 
   const last = schedule[schedule.length - 1];
-  const fully = last ? last.balance.eq(0) : false;
-  const endDate = fully ? last.date : "-";
+  // Samma tolerans och samma tomt-schema-regel som i den aktiva simuleringen
+  // i calculatePayoffSchedule — baslinjen och det nya utfallet måste bedöma
+  // "är lånet klart?" identiskt, annars blir monthsSaved och interestSaved
+  // jämförelser mellan två olika definitioner.
+  const fully = last ? last.balance.lt(0.01) : balance.lte(0);
+  const endDate = fully ? (last ? last.date : startDate) : "-";
   return { endDate, totalInterest, months: schedule.length, fully, schedule };
 }
 
 export function calculatePayoffSchedule(input: StrategyInput): CalculationResult {
+  validateInput(input);
+  if (input.loans.length === 0) return emptyResult(input.startDate);
+
   // Sortera enligt strategi för ordning
-  let sortedLoans = [...input.loans];
+  const sortedLoans = [...input.loans];
   if (input.strategy === "avalanche") {
     sortedLoans.sort((a, b) => b.interestRate - a.interestRate);
   } else if (input.strategy === "snowball") {
@@ -185,10 +296,11 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
   const loanResults: LoanResult[] = [];
   const finishedDates = new Map<string, string>();
 
-  // För att lösa reinvest kedja: simulera i payoff-ordning
-  let reinvestPools = new Map<string, Big>(); // loanId som är klar -> belopp som frigjorts per mån
-  // vi kör loop per lån i ordning, när ett blir klart adderar vi dess betalning till poolen för nästa
-
+  // Återinvesteringskedjan löses genom att simulera i payoff-ordning: när ett
+  // lån blir klart registreras dess slutdatum i finishedDates, och lån längre
+  // ner i ordningen som pekar hit får sitt tillskott från och med då. Därför
+  // är detta ordningsberoende — ett lån kan bara återinvestera från ett lån
+  // som ligger FÖRE det i ordningen.
   let totalOriginalInterest = new Big(0);
   let totalNewInterest = new Big(0);
   let globalFreedomOriginal = input.startDate;
@@ -207,26 +319,6 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
 
   for (let idx = 0; idx < sortedLoans.length; idx++) {
     const loan = sortedLoans[idx];
-
-    // Samla extra från tidigare klart lån om reinvestment pekar hit
-    let extraReinvest = new Big(0);
-    if (loan.reinvestment?.enabled && loan.reinvestment.fromLoanId) {
-      const fromId = loan.reinvestment.fromLoanId;
-      const finished = finishedDates.get(fromId);
-      if (finished) {
-        const startRe = loan.reinvestment.startDate || finished;
-        // vi kommer simulera från start, så vi behöver veta att efter finished/start ska extra läggas på
-        // Förenkling: om nuvarande simulerad månad >= startRe, lägg till amount
-        // Vi löser genom att skicka in 0 här och hantera inne i loopen via closure - för enkelhet: vi lägger beloppet som extraReinvestPerMonth men med datumcheck i simulateOneLoan
-        // Här: vi använder loan.reinvestment.amount om finished finns, och låter simulateOneLoan kolla datum
-        // Så vi skickar hela beloppet och simulateOneLoan har logik för datum
-        // För att inte krångla: vi sätter extraReinvest = amount om startDate >= finished
-        // Eftersom vi simulerar från input.startDate, måste vi veta när fromLoan är klart för att veta när extra börjar
-        // Lösning: vi gör tvåfas - om reinvest enabled och fromLoan redan klart, så börjar extra från max(finished, reinvest.startDate)
-        // Vi implementerar det genom att i simulateOneLoan loopa och kolla curDate >= start
-        // Därför behöver vi skicka både amount och när det börjar gälla
-      }
-    }
 
     // Bygg oneTime map för detta lån
     const combinedOtp = new Map<string, Big>();
@@ -253,7 +345,19 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
         const otp = combinedOtp.get(curDate);
         if (otp && otp.gt(0)) {
           if (otp.gte(balance)) {
+            // Engångsbetalningen löser hela lånet. Raden MÅSTE skrivas till
+            // schemat innan vi bryter — annars är sista raden föregående
+            // månad med skuld kvar, och lånet rapporteras som "-" (blir
+            // aldrig skuldfritt) trots att det just betalades av.
+            const settled = balance;
             balance = new Big(0);
+            schedule.push({
+              date: curDate,
+              payment: settled,
+              interest: new Big(0),
+              principal: settled,
+              balance,
+            });
             break;
           } else {
             balance = balance.minus(otp);
@@ -329,8 +433,10 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
         if (balance.lte(0)) break;
       }
       const last = schedule[schedule.length - 1];
-      const fully = last ? last.balance.eq(0) || last.balance.lt(0.01) : false;
-      const endDate = fully && last ? last.date : "-";
+      // Tomt schema = lånet hade redan noll i saldo och behövde aldrig
+      // simuleras. Det är skuldfritt från start, inte "blir aldrig klart".
+      const fully = last ? last.balance.lt(0.01) : balance.lte(0);
+      const endDate = fully ? (last ? last.date : input.startDate) : "-";
       return { endDate, totalInterest, months: schedule.length, fully, schedule };
     })();
 
@@ -359,14 +465,7 @@ export function calculatePayoffSchedule(input: StrategyInput): CalculationResult
     });
   }
 
-  // första klart
-  let firstDebtPaidDate = globalFreedomNew;
-  for (const lr of loanResults) {
-    if (lr.newEndDate !== "-" && diffMonths(firstDebtPaidDate, lr.newEndDate) > 0 || firstDebtPaidDate === globalFreedomNew) {
-      // hitta tidigaste
-    }
-  }
-  // hitta tidigaste nya datum
+  // Tidigaste lån som blir klart (används för "första skulden betald").
   let earliest: string | null = null;
   for (const lr of loanResults) {
     if (lr.newEndDate === "-") continue;

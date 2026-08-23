@@ -74,6 +74,50 @@ export interface BakeInResult {
   summaryLine: string;
 }
 
+/**
+ * Ränteavdrag beror på om lånet har säkerhet eller inte.
+ *
+ * Bolån och andra lån med säkerhet: 30 % avdrag upp till takbeloppet i
+ * ränteutgifter per år, 21 % på överskjutande del.
+ *
+ * Blancolån och annan konsumtionskredit utan säkerhet: avdraget trappas ned
+ * och försvinner. Satsen ligger i en egen konstant just för att den ändras
+ * mellan åren — den ska stämmas av mot Skatteverket inför varje årsskifte,
+ * inte antas.
+ *
+ * Poängen med att skilja dem åt: när ett blancolån bakas in i bolånet
+ * flyttas räntan från en icke avdragsgill skuld till en avdragsgill. Räknar
+ * man med samma avdragssats på båda sidor försvinner exakt den effekt som
+ * gör inbakningen värd att göra — eller så överdrivs den.
+ */
+export const SECURED_DEDUCTION_RATE = 0.3;
+export const SECURED_DEDUCTION_RATE_ABOVE_CAP = 0.21;
+export const SECURED_DEDUCTION_CAP_PER_YEAR = 100_000;
+/** Avdrag för lån utan säkerhet. Nedtrappat — verifiera mot aktuellt taxeringsår. */
+export const UNSECURED_DEDUCTION_RATE = 0;
+
+/** Skattelättnaden på en årlig ränteutgift för ett lån MED säkerhet. */
+export function securedDeduction(annualInterest: number): number {
+  if (!(annualInterest > 0)) return 0;
+  const belowCap = Math.min(annualInterest, SECURED_DEDUCTION_CAP_PER_YEAR);
+  const aboveCap = Math.max(0, annualInterest - SECURED_DEDUCTION_CAP_PER_YEAR);
+  return (
+    belowCap * SECURED_DEDUCTION_RATE + aboveCap * SECURED_DEDUCTION_RATE_ABOVE_CAP
+  );
+}
+
+/** Ränta efter skatt för ett lån med säkerhet, över `years` år. */
+function securedAfterTax(totalInterest: number, years: number): number {
+  if (!(years > 0)) return totalInterest;
+  const perYear = totalInterest / years;
+  return (perYear - securedDeduction(perYear)) * years;
+}
+
+/** Ränta efter skatt för ett lån utan säkerhet. */
+function unsecuredAfterTax(totalInterest: number): number {
+  return totalInterest * (1 - UNSECURED_DEDUCTION_RATE);
+}
+
 function annuity(balance: number, annualRate: number, months: number): number {
   if (balance <= 0 || months <= 0) return 0;
   const r = annualRate / 12;
@@ -129,7 +173,16 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
   const totalIntBefore = mortIntBefore + persIntBefore;
   const totalIntAfter = mortIntAfter + persIntAfter;
   const interestSavedGross = totalIntBefore - totalIntAfter;
-  const interestSavedNet = interestSavedGross * 0.7;
+
+  // Netto räknas per lånetyp, inte som en klumpsumma: bolåneräntan är
+  // avdragsgill, blancoräntan (i praktiken) inte. Att baka in flyttar ränta
+  // mellan de två — det är hela poängen med affären, och den effekten
+  // försvinner om man lägger samma avdragssats på båda sidor.
+  const netBefore =
+    securedAfterTax(mortIntBefore, years) + unsecuredAfterTax(persIntBefore);
+  const netAfter =
+    securedAfterTax(mortIntAfter, years) + unsecuredAfterTax(persIntAfter);
+  const interestSavedNet = netBefore - netAfter;
 
   const warningLtv = ltvAfter > 0.85;
   let warningText: string | null = null;
@@ -140,10 +193,18 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
   }
 
   const fmt = (n: number) => Math.round(n).toLocaleString("sv-SE");
+  // En förlust MÅSTE skrivas ut som en förlust. Tidigare föll allt som inte
+  // var en vinst ner i "Dra slidern för att se effekt", så en inbakning som
+  // kostade pengar — vilket händer så fort belåningsgraden passerar en
+  // amorteringströskel — såg ut som att den inte gjorde någonting alls.
   const summaryLine =
-    interestSavedGross > 0
-      ? `Baka in ${fmt(bake)} kr → sparar ca ${fmt(interestSavedGross)} kr brutto (${fmt(interestSavedNet)} kr netto efter 30% avdrag). Månad ${fmt(monthBefore)} → ${fmt(monthAfter)} kr.`
-      : "Dra slidern för att se effekt.";
+    bake <= 0
+      ? "Dra slidern för att se effekt."
+      : interestSavedGross > 0
+        ? `Baka in ${fmt(bake)} kr → sparar ca ${fmt(interestSavedGross)} kr brutto (${fmt(interestSavedNet)} kr efter ränteavdrag). Månad ${fmt(monthBefore)} → ${fmt(monthAfter)} kr.`
+        : interestSavedGross < 0
+          ? `Baka in ${fmt(bake)} kr → kostar dig ca ${fmt(Math.abs(interestSavedGross))} kr mer i ränta (${fmt(Math.abs(interestSavedNet))} kr efter ränteavdrag). Månad ${fmt(monthBefore)} → ${fmt(monthAfter)} kr.`
+          : `Baka in ${fmt(bake)} kr → varken sparar eller kostar något i ränta. Månad ${fmt(monthBefore)} → ${fmt(monthAfter)} kr.`;
 
   return {
     bake,

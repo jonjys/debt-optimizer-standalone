@@ -72,15 +72,26 @@ const createState = (loan: WaterfallLoan): LoanState => {
   };
 };
 
+/**
+ * Amorteringen en given månad. Rak amortering betyder att amorteringsdelen
+ * ligger fast och räntan sjunker; annuitet betyder att totalen ligger fast
+ * och amorteringsdelen växer. Väntefas och fokusfas MÅSTE använda samma
+ * definition — annars byter ett lån tyst betalningsmodell mitt i planen
+ * beroende på var i kön det står.
+ */
+const monthlyPrincipal = (state: LoanState, interest: Big, rollover: Big): Big =>
+  state.source.paymentStyle === "fixed_amort"
+    ? state.fixedPrincipal.plus(rollover)
+    : state.payment.plus(rollover).minus(interest);
+
 const advanceWaiting = (state: LoanState, months: number) => {
   for (let month = 0; month < months && state.balance.gt(0); month++) {
     const interest = state.balance.times(state.monthlyRate);
     state.interest = state.interest.plus(interest);
-    const principal =
-      state.source.paymentStyle === "fixed_amort" && state.fixedPrincipal.gt(0)
-        ? state.fixedPrincipal
-        : state.payment.minus(interest);
-    state.balance = state.balance.minus(principal);
+    const principal = monthlyPrincipal(state, interest, new Big(0));
+    state.balance = state.balance.minus(
+      principal.lt(state.balance) ? principal : state.balance,
+    );
     if (state.balance.lt(0)) state.balance = new Big(0);
   }
 };
@@ -94,10 +105,7 @@ const advanceFocus = (
   for (; monthsUsed < months && state.balance.gt(0); monthsUsed++) {
     const interest = state.balance.times(state.monthlyRate);
     state.interest = state.interest.plus(interest);
-    const principal =
-      state.source.paymentStyle === "fixed_amort"
-        ? state.fixedPrincipal.plus(rollover)
-        : state.payment.plus(rollover).minus(interest);
+    const principal = monthlyPrincipal(state, interest, rollover);
 
     if (principal.lte(0)) {
       const shortage = interest.minus(state.payment.plus(rollover));
