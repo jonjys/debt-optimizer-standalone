@@ -2,11 +2,40 @@
 
 import { calculateBakeIn } from "@/lib/debt-optimizer/bake-in";
 import { calculatePayoffSchedule } from "@/lib/debt-optimizer/engine";
+import {
+  calcWaterfall,
+  type WaterfallLoan,
+  type WaterfallResult,
+} from "@/lib/debt-optimizer/waterfall";
 import type {
   CalculationResult,
   Loan,
   PayoffStrategy,
 } from "@/lib/debt-optimizer/types";
+import {
+  CreditLoanMetrics,
+  LeasingLoanFields,
+  SortableLoanCard,
+  TimeBoxControl,
+  type LeasingTerms,
+  type TimeBox,
+} from "@/components/LoanCard";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import Big from "big.js";
 import {
   ArrowRight,
   ArrowRightLeft,
@@ -91,7 +120,7 @@ const LOAN_KINDS: Record<
     icon: "💸",
     en: "Credit card",
     sv: "Kreditkort",
-    rate: 0.19,
+    rate: 0.23,
     helpEn: "High interest — prioritize this",
     helpSv: "Hög ränta — prioritera denna",
   },
@@ -127,6 +156,17 @@ const LOAN_KINDS: Record<
     helpEn: "Custom debt or recurring cost",
     helpSv: "Eget lån eller återkommande kostnad",
   },
+};
+
+const DEFAULT_LEASING_TERMS: LeasingTerms = {
+  company: "Toyota Corolla",
+  monthlyCost: 4_039,
+  months: 36,
+  buyPrice: 195_000,
+  downPayment: 25_000,
+  residualValue: 120_000,
+  buyRate: 4.1,
+  rateIncrease: 0.1,
 };
 
 const START = "2026-08";
@@ -317,14 +357,10 @@ export default function Page() {
   });
   const [fearRate, setFearRate] = useState(0.1);
   const [income, setIncome] = useState(0);
-  const [leasingCompare, setLeasingCompare] = useState({
-    enabled: false,
-    description: "Toyota Corolla leasing",
-    monthly: 5000,
-    months: 36,
-    cash: 280000,
-    residual: 180000,
-  });
+  const [leasingTerms, setLeasingTerms] = useState<
+    Record<string, LeasingTerms>
+  >({});
+  const [timeBoxes, setTimeBoxes] = useState<Record<string, TimeBox>>({});
   const [strategy, setStrategy] = useState<PayoffStrategy>("avalanche");
   const [reinvestments, setReinvestments] = useState<Reinvestment[]>([]);
   const [propertyValue, setPropertyValue] = useState(3_027_201);
@@ -369,22 +405,55 @@ export default function Page() {
       }),
     [reinvestments],
   );
+  const debtLoans = useMemo(
+    () => loans.filter((loan) => loanKinds[loan.id] !== "leasing"),
+    [loanKinds, loans],
+  );
+  const waterfallLoans = useMemo<WaterfallLoan[]>(
+    () =>
+      debtLoans.map((loan) => ({
+        id: loan.id,
+        name: loan.name,
+        balance: loan.balance,
+        interestRate: loan.interestRate,
+        monthlyPayment:
+          loan.currentMonthlyPayment + (loan.extraMonthly || 0),
+        paymentStyle: loan.paymentStyle,
+        timeBoxMonths: timeBoxes[loan.id]?.enabled
+          ? timeBoxes[loan.id].months
+          : undefined,
+      })),
+    [debtLoans, timeBoxes],
+  );
+  const waterfall = useMemo(
+    () => calcWaterfall(waterfallLoans),
+    [waterfallLoans],
+  );
+  const avalancheWaterfall = useMemo(
+    () =>
+      calcWaterfall(
+        [...waterfallLoans]
+          .sort((a, b) => b.interestRate - a.interestRate)
+          .map((loan) => ({ ...loan, timeBoxMonths: undefined })),
+      ),
+    [waterfallLoans],
+  );
   const calculate = useCallback(
     (s: PayoffStrategy) =>
-      loans.length
+      debtLoans.length
         ? calculatePayoffSchedule({
-            loans: withReinvestments(loans),
+            loans: withReinvestments(debtLoans),
             oneTimePayments: [],
             startDate: START,
             strategy: s,
           })
         : null,
-    [loans, withReinvestments],
+    [debtLoans, withReinvestments],
   );
   const result = useMemo(() => calculate(strategy), [calculate, strategy]);
   const avalanche = useMemo(() => calculate("avalanche"), [calculate]);
   const snowball = useMemo(() => calculate("snowball"), [calculate]);
-  const personalTotal = loans
+  const personalTotal = debtLoans
     .filter((x) => loanKinds[x.id] === "personal")
     .reduce((sum, x) => sum + x.balance, 0);
   const setPersonalTotal = (value: number) => {
@@ -405,17 +474,30 @@ export default function Page() {
     setAmortKinds((current) => ({ ...current, personal: "annuity" }));
     setLoans((current) => [...current, personal]);
   };
+  const refinanceMortgage = debtLoans.find(
+    (loan) => loanKinds[loan.id] === "mortgage",
+  );
+  const refinancePersonal = debtLoans.find(
+    (loan) => loanKinds[loan.id] === "personal",
+  );
   const bake = useMemo(
     () =>
       calculateBakeIn({
         mortgage: mortgageValue,
-        mortgageRate: loans[0]?.interestRate || 0.041,
+        mortgageRate: refinanceMortgage?.interestRate || 0.041,
         personal: personalTotal,
-        personalRate: loans[1]?.interestRate || 0.085,
+        personalRate: refinancePersonal?.interestRate || 0.085,
         homeValue: propertyValue,
         bakeAmount,
       }),
-    [mortgageValue, propertyValue, personalTotal, bakeAmount, loans],
+    [
+      mortgageValue,
+      propertyValue,
+      personalTotal,
+      bakeAmount,
+      refinanceMortgage?.interestRate,
+      refinancePersonal?.interestRate,
+    ],
   );
   const refinanceDate = addMonths(
     START,
@@ -430,7 +512,7 @@ export default function Page() {
       ),
     ),
   );
-  const total = loans.reduce((sum, x) => sum + x.balance, 0);
+  const total = debtLoans.reduce((sum, x) => sum + x.balance, 0);
   const monthlyTotal = loans.reduce(
     (sum, x) => sum + x.currentMonthlyPayment + (x.extraMonthly || 0),
     0,
@@ -534,6 +616,8 @@ export default function Page() {
     setLoanKinds({ mortgage: "mortgage", personal: "personal" });
     setAmortKinds({ mortgage: "fixed_amort", personal: "annuity" });
     setExpanded({ personal: true });
+    setLeasingTerms({});
+    setTimeBoxes({});
     setReinvestments([
       {
         fromLoanId: "personal",
@@ -605,8 +689,12 @@ export default function Page() {
               setFearRate={setFearRate}
               income={income}
               setIncome={setIncome}
-              leasingCompare={leasingCompare}
-              setLeasingCompare={setLeasingCompare}
+              leasingTerms={leasingTerms}
+              setLeasingTerms={setLeasingTerms}
+              timeBoxes={timeBoxes}
+              setTimeBoxes={setTimeBoxes}
+              waterfall={waterfall}
+              avalancheWaterfall={avalancheWaterfall}
               onPdf={handlePdf}
             />
           )}
@@ -634,25 +722,29 @@ export default function Page() {
               personalTotal={personalTotal}
               setPersonalTotal={setPersonalTotal}
               refinanceDate={refinanceDate}
+              baselineMonths={waterfall.totalMonths}
             />
           )}
           <div className="fixed inset-x-3 bottom-3 z-50 grid grid-cols-3 rounded-2xl border border-white/10 bg-[#101015]/95 p-2 shadow-2xl backdrop-blur-xl md:hidden">
             <Mini
               label={t.free}
-              value={month(result?.newFreedomDate || "-", lang)}
+              value={month(
+                waterfall.fullyPaid && waterfall.totalMonths > 0
+                  ? addMonths(START, waterfall.totalMonths - 1)
+                  : "-",
+                lang,
+              )}
             />
             <Mini
               label={
-                loans.length === 1
+                debtLoans.length <= 1
                   ? lang === "sv"
                     ? "Total ränta"
                     : "Total interest"
                   : t.saved
               }
               value={money(
-                loans.length === 1
-                  ? result?.totalNewInterest || 0
-                  : result?.totalInterestSaved || 0,
+                waterfall.totalInterest,
                 lang,
                 true,
               )}
@@ -913,13 +1005,48 @@ function Today(p: any) {
   );
 }
 
-function ResultSidebar({ lang, t, result, loans, reinvestments }: any) {
+function ResultSidebar({
+  lang,
+  t,
+  result,
+  loans,
+  reinvestments = [],
+  waterfall,
+  avalancheWaterfall,
+  monthlyTotal,
+}: any) {
+  const usesWaterfall = Boolean(waterfall);
+  const hasDebts = loans.length > 0;
   const singleLoan = loans.length === 1;
-  const monthsSaved = result?.totalMonthsSaved || 0;
-  const payoffMonths = monthsFromStart(result?.newFreedomDate);
-  const interestValue = singleLoan
-    ? result?.totalNewInterest || 0
-    : Math.max(0, result?.totalInterestSaved || 0);
+  const customDate =
+    waterfall?.fullyPaid && waterfall.totalMonths > 0
+      ? addMonths(START, waterfall.totalMonths - 1)
+      : "-";
+  const avalancheDate =
+    avalancheWaterfall?.fullyPaid && avalancheWaterfall.totalMonths > 0
+      ? addMonths(START, avalancheWaterfall.totalMonths - 1)
+      : "-";
+  const freedomDate = usesWaterfall ? customDate : result?.newFreedomDate || "-";
+  const payoffMonths = usesWaterfall
+    ? waterfall.totalMonths
+    : monthsFromStart(result?.newFreedomDate);
+  const monthsSaved = usesWaterfall
+    ? Math.max(0, waterfall.totalMonths - (avalancheWaterfall?.totalMonths || 0))
+    : result?.totalMonthsSaved || 0;
+  const interestValue = usesWaterfall
+    ? waterfall.totalInterest
+    : singleLoan
+      ? result?.totalNewInterest || 0
+      : Math.max(0, result?.totalInterestSaved || 0);
+  const interestSavedByAvalanche = usesWaterfall
+    ? Math.max(
+        0,
+        waterfall.totalInterest - (avalancheWaterfall?.totalInterest || 0),
+      )
+    : 0;
+  const payoffRows = usesWaterfall
+    ? waterfall.loans
+    : result?.loanResults || [];
   return (
     <aside className="space-y-3">
       <div className="relative min-h-[120px] overflow-hidden rounded-xl border border-blue-400/20 bg-blue-500/[.09] p-4 shadow-[inset_0_0_45px_rgba(59,130,246,.08)] backdrop-blur-xl">
@@ -928,25 +1055,31 @@ function ResultSidebar({ lang, t, result, loans, reinvestments }: any) {
           <ShieldCheck size={17} />
         </div>
         <div className="mt-3 text-[38px] font-semibold leading-none tracking-[-.05em]">
-          {month(result?.newFreedomDate || "-", lang)}
+          {month(freedomDate, lang)}
         </div>
-        {monthsSaved > 0 ? (
-          <span className="mt-4 inline-flex rounded-full bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
-            {duration(monthsSaved, lang)} {t.earlier}
-          </span>
-        ) : result?.newFreedomDate === "-" ? (
-          <span className="mt-4 inline-flex rounded-full bg-red-400/10 px-3 py-1.5 text-xs font-semibold text-red-300">
-            {lang === "sv" ? "Betalningen är för låg" : "Payment is too low"}
+        {freedomDate === "-" ? (
+          <span className={`mt-4 inline-flex rounded-full px-3 py-1.5 text-xs font-semibold ${hasDebts ? "bg-red-400/10 text-red-300" : "bg-white/[.06] text-white/45"}`}>
+            {hasDebts
+              ? lang === "sv"
+                ? "Betalningen är för låg"
+                : "Payment is too low"
+              : lang === "sv"
+                ? "Lägg till ett lån"
+                : "Add a debt"}
           </span>
         ) : payoffMonths > 0 ? (
           <span className="mt-4 inline-flex rounded-full bg-blue-400/10 px-3 py-1.5 text-xs font-semibold text-blue-200">
             {duration(payoffMonths, lang)} {lang === "sv" ? "till skuldfri" : "to debt-free"}
           </span>
+        ) : monthsSaved > 0 ? (
+          <span className="mt-4 inline-flex rounded-full bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
+            {duration(monthsSaved, lang)} {t.earlier}
+          </span>
         ) : null}
       </div>
       <div className="card p-6">
         <span className="text-sm text-white/40">
-          {singleLoan
+          {usesWaterfall || singleLoan
             ? lang === "sv"
               ? "Total ränta"
               : "Total interest"
@@ -955,24 +1088,83 @@ function ResultSidebar({ lang, t, result, loans, reinvestments }: any) {
         <div className="mt-4 text-4xl font-semibold">
           <CountUp value={interestValue} lang={lang} />
         </div>
+        {typeof monthlyTotal === "number" ? (
+          <p className="mt-3 text-xs text-white/35">
+            {lang === "sv" ? "Total månadskostnad" : "Total monthly outflow"}: {money(monthlyTotal, lang)}
+          </p>
+        ) : null}
       </div>
+      {usesWaterfall && avalancheWaterfall ? (
+        <div className="card p-5">
+          <div className="mb-3 text-xs font-semibold uppercase tracking-[.14em] text-white/35">
+            {lang === "sv" ? "Din ordning vs lavin" : "Your order vs avalanche"}
+          </div>
+          <div className="space-y-3 text-xs">
+            <div className="rounded-xl border border-blue-400/15 bg-blue-500/[.06] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <b>{lang === "sv" ? "Din ordning" : "Your order"}</b>
+                <span>{month(customDate, lang)}</span>
+              </div>
+              <p className="mt-1 text-white/40">
+                {lang === "sv" ? "Ränta" : "Interest"} {money(waterfall.totalInterest, lang)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-emerald-400/15 bg-emerald-500/[.06] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <b>{lang === "sv" ? "Lavin" : "Avalanche"}</b>
+                <span>{month(avalancheDate, lang)}</span>
+              </div>
+              <p className="mt-1 text-white/40">
+                {lang === "sv" ? "Ränta" : "Interest"} {money(avalancheWaterfall.totalInterest, lang)}
+              </p>
+              <p className="mt-2 font-medium text-emerald-300">
+                {interestSavedByAvalanche > 0
+                  ? `${lang === "sv" ? "Sparar" : "Saves"} ${money(interestSavedByAvalanche, lang)}`
+                  : lang === "sv"
+                    ? "Din ordning är redan lika billig"
+                    : "Your order is already just as inexpensive"}
+                {monthsSaved > 0
+                  ? ` · ${duration(monthsSaved, lang)} ${lang === "sv" ? "snabbare" : "faster"}`
+                  : ""}
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="card p-5">
         <div className="mb-2 text-xs text-white/35">{t.payoff}</div>
-        {result?.loanResults.map((x: any) => (
+        {payoffRows.map((x: any, index: number) => (
           <div
             key={x.id}
             className="border-b border-white/[.05] py-3 last:border-0"
           >
             <div className="flex items-center gap-3">
               <span className="grid h-6 w-6 place-items-center rounded-full bg-white/5 text-xs">
-                {x.payoffOrder}
+                {x.payoffOrder || index + 1}
               </span>
               <span className="flex-1 text-xs">{x.name}</span>
-              <span className="text-xs text-emerald-400">
-                <Check size={12} className="inline" />{" "}
-                {month(x.newEndDate, lang)}
+              <span className={x.fullyPaid === false ? "text-xs text-orange-300" : "text-xs text-emerald-400"}>
+                {x.fullyPaid === false ? null : <Check size={12} className="inline" />} {" "}
+                {usesWaterfall
+                  ? x.fullyPaid
+                    ? month(addMonths(START, x.finishesAt - 1), lang)
+                    : lang === "sv"
+                      ? "Över 50 år"
+                      : "Over 50 years"
+                  : month(x.newEndDate, lang)}
               </span>
             </div>
+            {usesWaterfall ? (
+              <div className="ml-9 mt-1 text-[10px] text-white/30">
+                {x.isAnchor
+                  ? lang === "sv"
+                    ? `${x.independentMonths} mån · oberoende ankare`
+                    : `${x.independentMonths} months · independent anchor`
+                  : lang === "sv"
+                    ? `${x.waitMonths} mån väntan + ${x.focusMonths} mån fokus`
+                    : `${x.waitMonths} months waiting + ${x.focusMonths} months focused`}
+              </div>
+            ) : null}
             {reinvestments
               .filter(
                 (r: Reinvestment) =>
@@ -1610,12 +1802,25 @@ function SavingsVsPayoff({
     [saveRate, setSaveRate] = useState(0.01),
     [debtRate, setDebtRate] = useState(loanRate),
     [deduction, setDeduction] = useState(true),
-    sv = lang === "sv",
-    factor = deduction ? 0.7 : 1,
-    save = cash * saveRate * 0.7,
-    pay = cash * debtRate * factor,
-    diff = pay - save,
-    max = Math.max(save, pay, 1);
+    sv = lang === "sv";
+  const { save, pay, diff, max } = useMemo(() => {
+    const cashValue = new Big(Math.max(0, cash));
+    const saveValue = cashValue
+      .times(Math.max(0, saveRate))
+      .times("0.7");
+    const effectiveDebtRate = new Big(Math.max(0, debtRate)).times(
+      deduction ? "0.7" : "1",
+    );
+    const payValue = cashValue.times(effectiveDebtRate);
+    const saveNumber = Number(saveValue.toString());
+    const payNumber = Number(payValue.toString());
+    return {
+      save: saveNumber,
+      pay: payNumber,
+      diff: Number(payValue.minus(saveValue).toString()),
+      max: Math.max(saveNumber, payNumber, 1),
+    };
+  }, [cash, saveRate, debtRate, deduction]);
   useEffect(() => setDebtRate(loanRate), [loanRate]);
   return (
     <div className="card rounded-xl p-4">
@@ -1738,30 +1943,58 @@ function TodayV5(p: any) {
       setFearRate,
       income,
       setIncome,
-      leasingCompare,
-      setLeasingCompare,
+      leasingTerms,
+      setLeasingTerms,
+      timeBoxes,
+      setTimeBoxes,
+      waterfall,
+      avalancheWaterfall,
       onPdf,
     } = p,
     sv = lang === "sv";
+  const debtPlanLoans = useMemo<Loan[]>(
+    () =>
+      loans.filter((loan: Loan) => loanKinds[loan.id] !== "leasing"),
+    [loanKinds, loans],
+  );
   const mortgage =
-    loans.find((x: Loan) => loanKinds[x.id] === "mortgage") || loans[0];
-  const highestRateLoan = loans.reduce((highest: Loan, loan: Loan) =>
-    loan.interestRate > highest.interestRate ? loan : highest,
+    debtPlanLoans.find((x: Loan) => loanKinds[x.id] === "mortgage") ||
+    debtPlanLoans[0];
+  const highestRateLoan = debtPlanLoans.reduce<Loan | null>(
+    (highest, loan) =>
+      !highest || loan.interestRate > highest.interestRate ? loan : highest,
+    null,
   );
   const stressed = useMemo(
     () =>
-      calculatePayoffSchedule({
-        loans: loans.map((x: Loan) =>
-          x.id === mortgage.id
-            ? { ...x, interestRate: x.interestRate + fearRate / 100 }
-            : x,
-        ),
-        oneTimePayments: [],
-        startDate: START,
-        strategy,
-      }),
-    [loans, mortgage, fearRate, strategy],
+      mortgage
+        ? calculatePayoffSchedule({
+            loans: debtPlanLoans.map((x: Loan) =>
+              x.id === mortgage.id
+                ? { ...x, interestRate: x.interestRate + fearRate / 100 }
+                : x,
+            ),
+            oneTimePayments: [],
+            startDate: START,
+            strategy,
+          })
+        : null,
+    [debtPlanLoans, mortgage, fearRate, strategy],
   );
+  const dragSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    setLoans((current: Loan[]) => {
+      const oldIndex = current.findIndex((loan) => loan.id === active.id);
+      const newIndex = current.findIndex((loan) => loan.id === over.id);
+      return oldIndex < 0 || newIndex < 0
+        ? current
+        : arrayMove(current, oldIndex, newIndex);
+    });
+  };
   const changeKind = (loan: Loan, kind: LoanKind) => {
     const m = LOAN_KINDS[kind],
       a: AmortKind =
@@ -1772,12 +2005,23 @@ function TodayV5(p: any) {
             : "annuity";
     setLoanKinds((x: any) => ({ ...x, [loan.id]: kind }));
     setAmortKinds((x: any) => ({ ...x, [loan.id]: a }));
+    if (kind === "leasing") {
+      setLeasingTerms((current: Record<string, LeasingTerms>) => ({
+        ...current,
+        [loan.id]: current[loan.id] || DEFAULT_LEASING_TERMS,
+      }));
+    }
     setLoans((all: Loan[]) =>
       all.map((x) =>
         x.id === loan.id
           ? {
               ...x,
               name: m[lang as Lang],
+              currentMonthlyPayment:
+                kind === "leasing"
+                  ? leasingTerms[loan.id]?.monthlyCost ||
+                    DEFAULT_LEASING_TERMS.monthlyCost
+                  : x.currentMonthlyPayment,
               paymentStyle: a === "fixed_amort" ? "fixed_amort" : "annuity",
               loanType: a === "fixed_amort" ? "Rak amortering" : "Annuitet",
             }
@@ -1794,17 +2038,6 @@ function TodayV5(p: any) {
     );
   };
   const addPreset = (kind: LoanKind) => {
-    if (kind === "leasing") {
-      setLeasingCompare({
-        enabled: true,
-        description: "Toyota Corolla leasing",
-        monthly: 5000,
-        months: 36,
-        cash: 280000,
-        residual: 180000,
-      });
-      return;
-    }
     const id = crypto.randomUUID();
     const presets: Record<LoanKind, Partial<Loan>> = {
       mortgage: {
@@ -1820,9 +2053,9 @@ function TodayV5(p: any) {
         currentMonthlyPayment: 3_900,
       },
       leasing: {
-        balance: 180_000,
+        balance: 0,
         interestRate: 0,
-        currentMonthlyPayment: 5_000,
+        currentMonthlyPayment: DEFAULT_LEASING_TERMS.monthlyCost,
       },
       family: {
         balance: 50_000,
@@ -1836,14 +2069,29 @@ function TodayV5(p: any) {
       },
       car: {},
       student: {},
-      credit: {},
+      credit: {
+        balance: 7_554,
+        interestRate: 0.23,
+        currentMonthlyPayment: 425,
+      },
       other: {},
     };
     const meta = LOAN_KINDS[kind];
     setLoanKinds((x: any) => ({ ...x, [id]: kind }));
+    if (kind === "leasing") {
+      setLeasingTerms((current: Record<string, LeasingTerms>) => ({
+        ...current,
+        [id]: { ...DEFAULT_LEASING_TERMS },
+      }));
+    }
     setAmortKinds((x: any) => ({
       ...x,
-      [id]: kind === "mortgage" ? "fixed_amort" : "annuity",
+      [id]:
+        kind === "mortgage"
+          ? "fixed_amort"
+          : kind === "leasing"
+            ? "fixed_cost"
+            : "annuity",
     }));
     setLoans((current: Loan[]) => [
       ...current,
@@ -1895,13 +2143,17 @@ function TodayV5(p: any) {
             [
               "mortgage",
               "personal",
+              "credit",
+              "leasing",
               "family",
               "installment",
             ] as LoanKind[]
           ).map((kind) => (
             <button key={kind} onClick={() => addPreset(kind)} className="pill">
               +{" "}
-              {kind === "family"
+              {kind === "leasing"
+                ? "Leasing"
+                : kind === "family"
                 ? sv
                   ? "Inom familj 50k"
                   : "Family loan 50k"
@@ -1913,255 +2165,376 @@ function TodayV5(p: any) {
             </button>
           ))}
         </div>
-        <div className="space-y-3">
-          {loans.map((loan: Loan) => {
-            const kind: LoanKind = loanKinds[loan.id] || "other",
-              meta = LOAN_KINDS[kind],
-              rule = reinvestments.find(
-                (r: Reinvestment) => r.fromLoanId === loan.id,
-              ),
-              payoff = result?.loanResults.find((r: any) => r.id === loan.id),
-              advanced = expanded[loan.id];
-            return (
-              <article key={loan.id} className="card p-4">
-                <div className="flex gap-3">
-                  <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/[.05] text-xl">
-                    {meta.icon}
-                  </span>
-                  <div className="grid flex-1 gap-2 sm:grid-cols-2">
-                    <Select
-                      label={sv ? "Typ av lån" : "Loan type"}
-                      value={kind}
-                      onChange={(v) => changeKind(loan, v as LoanKind)}
-                    >
-                      {(Object.keys(LOAN_KINDS) as LoanKind[]).map((k) => (
-                        <option key={k} value={k}>
-                          {LOAN_KINDS[k].icon} {LOAN_KINDS[k][lang]}
-                        </option>
-                      ))}
-                    </Select>
-                    <label>
-                      <small className="label">{sv ? "Namn" : "Name"}</small>
-                      <input
-                        spellCheck={false}
-                        value={loan.name}
-                        onChange={(e) =>
-                          setLoans((a: Loan[]) =>
-                            a.map((x) =>
-                              x.id === loan.id
-                                ? { ...x, name: e.target.value }
-                                : x,
-                            ),
-                          )
-                        }
-                        className="input"
-                      />
-                    </label>
-                  </div>
-                  <button
-                    onClick={() =>
-                      setLoans((a: Loan[]) => a.filter((x) => x.id !== loan.id))
-                    }
+        <p className="mb-3 text-xs text-white/30">
+          {sv
+            ? "Dra lånen för att välja ordning. Första lånet är alltid ditt oberoende ankare."
+            : "Drag debts to choose the order. The first debt is always your independent anchor."}
+        </p>
+        <DndContext
+          sensors={dragSensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={loans.map((loan: Loan) => loan.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="space-y-3">
+              {loans.map((loan: Loan) => {
+                const kind: LoanKind = loanKinds[loan.id] || "other";
+                const meta = LOAN_KINDS[kind];
+                const advanced = expanded[loan.id];
+                const waterfallLoan = (waterfall as WaterfallResult).loans.find(
+                  (item) => item.id === loan.id,
+                );
+                const leasing =
+                  leasingTerms[loan.id] || DEFAULT_LEASING_TERMS;
+                const timeBox = timeBoxes[loan.id] || {
+                  enabled: false,
+                  months: 60,
+                };
+                return (
+                  <SortableLoanCard
+                    key={loan.id}
+                    id={loan.id}
+                    disabled={kind === "leasing"}
+                    label={`${sv ? "Flytta" : "Move"} ${loan.name}`}
                   >
-                    <X size={15} className="text-white/25" />
-                  </button>
-                </div>
-                <p
-                  className={`ml-14 mt-2 text-[11px] ${kind === "credit" ? "text-red-400" : "text-white/30"}`}
-                >
-                  {meta[sv ? "helpSv" : "helpEn"]}
-                </p>
-                {kind === "family" && (
-                  <FamilyLoanFields
-                    lang={lang}
-                    rate={loan.interestRate}
-                    setRate={(v) => updateLoan(loan.id, "interestRate", v)}
-                  />
-                )}
-                <div className="ml-0 mt-4 max-w-sm md:ml-14">
-                  <Select
-                    label={sv ? "Hur betalar du? ⓘ" : "How do you pay? ⓘ"}
-                    value={amortKinds[loan.id] || "annuity"}
-                    onChange={(v) => changeAmort(loan, v as AmortKind)}
-                  >
-                    <option value="fixed_amort">
-                      {sv ? "Rak amortering" : "Straight-line principal"}
-                    </option>
-                    <option value="annuity">
-                      {sv ? "Annuitet" : "Annuity"}
-                    </option>
-                    <option value="fixed_cost">
-                      {sv ? "Fast kostnad (leasing)" : "Fixed cost (leasing)"}
-                    </option>
-                    <option value="interest_free">
-                      {sv
-                        ? "Räntefritt / Amorteringsfritt"
-                        : "Interest-free / Payment holiday"}
-                    </option>
-                  </Select>
-                  <p className="mt-2 text-[10px] text-white/25">
-                    {sv
-                      ? "Rak: samma amortering + sjunkande ränta. Annuitet: samma total varje månad."
-                      : "Straight-line: same principal + declining interest. Annuity: same total each month."}
-                  </p>
-                </div>
-                <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                  <Field
-                    label={t.balance}
-                    value={number(loan.balance, lang)}
-                    onChange={(v) => updateLoan(loan.id, "balance", v)}
-                  />
-                  <div>
-                    <Field
-                      label={t.rate}
-                      value={(loan.interestRate * 100)
-                        .toFixed(1)
-                        .replace(".", sv ? "," : ".")}
-                      suffix=" %"
-                      decimal
-                      onChange={(v) => {
-                        const minimum =
-                          kind === "mortgage" || kind === "personal" ? 0.1 : 0;
-                        const maximum =
-                          kind === "mortgage" ? 15 : kind === "personal" ? 30 : 100;
-                        updateLoan(
-                          loan.id,
-                          "interestRate",
-                          Math.min(maximum, Math.max(minimum, v)) / 100,
-                        );
-                      }}
-                    />
-                    {(kind === "mortgage" || kind === "personal") && (
-                      <p className="mt-1 px-1 text-[10px] text-white/25">
-                        {kind === "mortgage" ? "0,1–15 %" : "0,1–30 %"}
-                      </p>
-                    )}
-                  </div>
-                  <Field
-                    label={sv ? "Månadskostnad" : "Monthly cost"}
-                    value={number(loan.currentMonthlyPayment, lang)}
-                    onChange={(v) =>
-                      updateLoan(loan.id, "currentMonthlyPayment", v)
-                    }
-                  />
-                </div>
-                {loan.currentMonthlyPayment <=
-                  (loan.balance * loan.interestRate) / 12 && (
-                  <p className="mt-3 rounded-xl border border-red-500/25 bg-red-500/10 p-3 text-xs text-red-300">
-                    ⚠️{" "}
-                    {sv
-                      ? "Månadskostnaden täcker inte räntan. Skulden växer."
-                      : "The monthly payment does not cover interest. This debt grows."}
-                  </p>
-                )}
-                {loan.currentMonthlyPayment >
-                  (loan.balance * loan.interestRate) / 12 &&
-                  payoff &&
-                  !payoff.isFullyAmortizing && (
-                    <p className="mt-3 rounded-xl border border-orange-500/25 bg-orange-500/10 p-3 text-xs text-orange-200">
-                      ⚠️{" "}
-                      {sv
-                        ? "Planen tar längre än 50 år. Höj månadsbetalningen."
-                        : "This plan takes longer than 50 years. Increase the monthly payment."}
-                    </p>
-                  )}
-                <button
-                  onClick={() =>
-                    setExpanded((x: any) => ({ ...x, [loan.id]: !advanced }))
-                  }
-                  className="mt-4 text-xs text-blue-300"
-                >
-                  {advanced
-                    ? sv
-                      ? "Visa mindre ↑"
-                      : "Show less ↑"
-                    : sv
-                      ? "Visa mer ↓"
-                      : "Show more ↓"}
-                </button>
-                {advanced && (
-                  <div className="mt-4 rounded-2xl border border-white/[.05] bg-black/10 p-4">
-                    <div className="grid gap-3 md:grid-cols-3">
-                      <Field
-                        label={t.extra}
-                        value={number(loan.extraMonthly || 0, lang)}
-                        onChange={(v) => updateLoan(loan.id, "extraMonthly", v)}
-                      />
-                      {loans.length > 1 && (
-                        <Select
-                          label={`${t.when} ${loan.name} ${month(payoff?.newEndDate || "-", lang)} ${t.paid}`}
-                          value={rule?.toLoanId || ""}
-                          onChange={(v) => setRule(loan, v)}
+                    <article className="card p-4">
+                      <div className="flex gap-3">
+                        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/[.05] text-xl">
+                          {meta.icon}
+                        </span>
+                        <div className="grid flex-1 gap-2 pr-16 sm:grid-cols-2">
+                          <Select
+                            label={sv ? "Typ av lån" : "Loan type"}
+                            value={kind}
+                            onChange={(value) =>
+                              changeKind(loan, value as LoanKind)
+                            }
+                          >
+                            {(Object.keys(LOAN_KINDS) as LoanKind[]).map(
+                              (option) => (
+                                <option key={option} value={option}>
+                                  {LOAN_KINDS[option].icon}{" "}
+                                  {LOAN_KINDS[option][lang]}
+                                </option>
+                              ),
+                            )}
+                          </Select>
+                          {kind !== "leasing" ? (
+                            <label>
+                              <small className="label">
+                                {sv ? "Namn" : "Name"}
+                              </small>
+                              <input
+                                spellCheck={false}
+                                value={loan.name}
+                                onChange={(event) =>
+                                  setLoans((current: Loan[]) =>
+                                    current.map((item) =>
+                                      item.id === loan.id
+                                        ? { ...item, name: event.target.value }
+                                        : item,
+                                    ),
+                                  )
+                                }
+                                className="input"
+                              />
+                            </label>
+                          ) : (
+                            <div className="rounded-xl border border-white/[.05] bg-white/[.025] p-3 text-xs text-white/35">
+                              {sv
+                                ? "Jämförelse — påverkar inte skuldfri-datum"
+                                : "Comparison — does not affect debt-free date"}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          aria-label={`${sv ? "Ta bort" : "Remove"} ${loan.name}`}
+                          onClick={() => {
+                            setLoans((current: Loan[]) =>
+                              current.filter((item) => item.id !== loan.id),
+                            );
+                            setLeasingTerms(
+                              (current: Record<string, LeasingTerms>) => {
+                                const next = { ...current };
+                                delete next[loan.id];
+                                return next;
+                              },
+                            );
+                            setTimeBoxes((current: Record<string, TimeBox>) => {
+                              const next = { ...current };
+                              delete next[loan.id];
+                              return next;
+                            });
+                          }}
                         >
-                          <option value="">{t.none}</option>
-                          {loans
-                            .filter((x: Loan) => x.id !== loan.id)
-                            .map((x: Loan) => (
-                              <option key={x.id} value={x.id}>
-                                {sv ? "Lägg till i " : "Add to "}
-                                {x.name}
+                          <X size={15} className="text-white/25" />
+                        </button>
+                      </div>
+                      <p
+                        className={`ml-14 mt-2 text-[11px] ${kind === "credit" ? "text-red-400" : "text-white/30"}`}
+                      >
+                        {meta[sv ? "helpSv" : "helpEn"]}
+                      </p>
+
+                      {kind === "leasing" ? (
+                        <LeasingLoanFields
+                          lang={lang}
+                          value={leasing}
+                          onChange={(next) => {
+                            setLeasingTerms(
+                              (current: Record<string, LeasingTerms>) => ({
+                                ...current,
+                                [loan.id]: next,
+                              }),
+                            );
+                            updateLoan(
+                              loan.id,
+                              "currentMonthlyPayment",
+                              next.monthlyCost,
+                            );
+                          }}
+                        />
+                      ) : (
+                        <>
+                          {kind === "family" ? (
+                            <FamilyLoanFields
+                              lang={lang}
+                              rate={loan.interestRate}
+                              setRate={(value) =>
+                                updateLoan(loan.id, "interestRate", value)
+                              }
+                            />
+                          ) : null}
+                          <div className="ml-0 mt-4 max-w-sm md:ml-14">
+                            <Select
+                              label={
+                                sv ? "Hur betalar du? ⓘ" : "How do you pay? ⓘ"
+                              }
+                              value={amortKinds[loan.id] || "annuity"}
+                              onChange={(value) =>
+                                changeAmort(loan, value as AmortKind)
+                              }
+                            >
+                              <option value="fixed_amort">
+                                {sv
+                                  ? "Rak amortering"
+                                  : "Straight-line principal"}
                               </option>
-                            ))}
-                        </Select>
-                      )}
-                      {loans.length > 1 &&
-                        rule &&
-                        loans.some((target: Loan) => target.id === rule.toLoanId) && (
-                          <Field
-                            label={t.amount}
-                            value={number(rule.amount, lang)}
-                            onChange={(v) => updateRuleAmount(loan.id, v)}
+                              <option value="annuity">
+                                {sv ? "Annuitet" : "Annuity"}
+                              </option>
+                              <option value="interest_free">
+                                {sv
+                                  ? "Räntefritt / Amorteringsfritt"
+                                  : "Interest-free / Payment holiday"}
+                              </option>
+                            </Select>
+                            <p className="mt-2 text-[10px] text-white/25">
+                              {sv
+                                ? "Rak: samma amortering + sjunkande ränta. Annuitet: samma total varje månad."
+                                : "Straight-line: same principal + declining interest. Annuity: same total each month."}
+                            </p>
+                          </div>
+                          <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                            <Field
+                              label={t.balance}
+                              value={number(loan.balance, lang)}
+                              onChange={(value) =>
+                                updateLoan(loan.id, "balance", value)
+                              }
+                            />
+                            <div>
+                              <Field
+                                label={t.rate}
+                                value={(loan.interestRate * 100)
+                                  .toFixed(1)
+                                  .replace(".", sv ? "," : ".")}
+                                suffix=" %"
+                                decimal
+                                onChange={(value) => {
+                                  const minimum =
+                                    kind === "mortgage" || kind === "personal"
+                                      ? 0.1
+                                      : 0;
+                                  const maximum =
+                                    kind === "mortgage"
+                                      ? 15
+                                      : kind === "personal"
+                                        ? 30
+                                        : 100;
+                                  updateLoan(
+                                    loan.id,
+                                    "interestRate",
+                                    Math.min(maximum, Math.max(minimum, value)) /
+                                      100,
+                                  );
+                                }}
+                              />
+                              {kind === "mortgage" || kind === "personal" ? (
+                                <p className="mt-1 px-1 text-[10px] text-white/25">
+                                  {kind === "mortgage"
+                                    ? "0,1–15 %"
+                                    : "0,1–30 %"}
+                                </p>
+                              ) : null}
+                            </div>
+                            <Field
+                              label={sv ? "Månadskostnad" : "Monthly cost"}
+                              value={number(loan.currentMonthlyPayment, lang)}
+                              onChange={(value) =>
+                                updateLoan(
+                                  loan.id,
+                                  "currentMonthlyPayment",
+                                  value,
+                                )
+                              }
+                            />
+                          </div>
+
+                          {kind === "credit" ? (
+                            <CreditLoanMetrics
+                              lang={lang}
+                              balance={loan.balance}
+                              interestRate={loan.interestRate}
+                              monthlyPayment={loan.currentMonthlyPayment}
+                              paymentStyle={loan.paymentStyle}
+                            />
+                          ) : loan.currentMonthlyPayment <=
+                            (loan.balance * loan.interestRate) / 12 ? (
+                            <p className="mt-3 rounded-xl border border-red-500/25 bg-red-500/10 p-3 text-xs text-red-300">
+                              ⚠️{" "}
+                              {sv
+                                ? "Månadskostnaden täcker inte räntan. Skulden växer."
+                                : "The monthly payment does not cover interest. This debt grows."}
+                            </p>
+                          ) : waterfallLoan && !waterfallLoan.fullyPaid ? (
+                            <p className="mt-3 rounded-xl border border-orange-500/25 bg-orange-500/10 p-3 text-xs text-orange-200">
+                              ⚠️{" "}
+                              {sv
+                                ? "Planen tar längre än 50 år. Höj månadsbetalningen."
+                                : "This plan takes longer than 50 years. Increase the monthly payment."}
+                            </p>
+                          ) : null}
+
+                          {waterfallLoan ? (
+                            <div className="mt-3 rounded-xl border border-blue-400/15 bg-blue-500/[.06] px-3 py-2 text-xs text-blue-200">
+                              {!waterfallLoan.fullyPaid
+                                ? sv
+                                  ? "Inte skuldfri inom 50 år med nuvarande betalning"
+                                  : "Not debt-free within 50 years at this payment"
+                                : waterfallLoan.isAnchor
+                                  ? sv
+                                    ? `Skuldfri om ${waterfallLoan.independentMonths} mån (oberoende)`
+                                    : `Debt-free in ${waterfallLoan.independentMonths} months (independent)`
+                                  : sv
+                                    ? `Skuldfri om ${waterfallLoan.finishesAt} mån totalt (${waterfallLoan.waitMonths} mån väntan + ${waterfallLoan.focusMonths} mån)`
+                                    : `Debt-free in ${waterfallLoan.finishesAt} months total (${waterfallLoan.waitMonths} waiting + ${waterfallLoan.focusMonths} focused)`}
+                            </div>
+                          ) : null}
+
+                          <TimeBoxControl
+                            lang={lang}
+                            value={timeBox}
+                            onChange={(next) =>
+                              setTimeBoxes(
+                                (current: Record<string, TimeBox>) => ({
+                                  ...current,
+                                  [loan.id]: next,
+                                }),
+                              )
+                            }
                           />
-                        )}
-                    </div>
-                    <p className="mt-4 text-xs text-white/40">
-                      {sv ? "Du betalar totalt" : "You pay a total of"}{" "}
-                      <b className="text-white">
-                        {money(
-                          loan.balance + (payoff?.originalTotalInterest || 0),
-                          lang,
-                        )}
-                      </b>{" "}
-                      · {sv ? "varav" : "including"}{" "}
-                      {money(payoff?.originalTotalInterest || 0, lang)}{" "}
-                      {sv ? "ränta" : "interest"}
-                    </p>
-                  </div>
-                )}
-              </article>
-            );
-          })}
-        </div>
-        <UniversalCost
-          lang={lang}
-          value={leasingCompare}
-          setValue={setLeasingCompare}
-        />
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpanded((current: Record<string, boolean>) => ({
+                                ...current,
+                                [loan.id]: !advanced,
+                              }))
+                            }
+                            className="mt-4 text-xs text-blue-300"
+                          >
+                            {advanced
+                              ? sv
+                                ? "Visa mindre ↑"
+                                : "Show less ↑"
+                              : sv
+                                ? "Visa mer ↓"
+                                : "Show more ↓"}
+                          </button>
+                          {advanced ? (
+                            <div className="mt-4 rounded-2xl border border-white/[.05] bg-black/10 p-4">
+                              <Field
+                                label={t.extra}
+                                value={number(loan.extraMonthly || 0, lang)}
+                                onChange={(value) =>
+                                  updateLoan(loan.id, "extraMonthly", value)
+                                }
+                              />
+                              <p className="mt-3 text-xs text-white/40">
+                                {sv
+                                  ? `När lånet är klart flyttas ${number(loan.currentMonthlyPayment + (loan.extraMonthly || 0), lang)} kr/mån automatiskt till nästa lån.`
+                                  : `When paid, SEK ${number(loan.currentMonthlyPayment + (loan.extraMonthly || 0), lang)}/month automatically rolls into the next debt.`}
+                              </p>
+                              <p className="mt-2 text-xs text-white/40">
+                                {sv ? "Du betalar totalt" : "You pay a total of"}{" "}
+                                <b className="text-white">
+                                  {money(
+                                    loan.balance + (waterfallLoan?.interest || 0),
+                                    lang,
+                                  )}
+                                </b>{" "}
+                                · {sv ? "varav" : "including"}{" "}
+                                {money(waterfallLoan?.interest || 0, lang)}{" "}
+                                {sv ? "ränta" : "interest"}
+                              </p>
+                            </div>
+                          ) : null}
+                        </>
+                      )}
+                    </article>
+                  </SortableLoanCard>
+                );
+              })}
+            </div>
+          </SortableContext>
+        </DndContext>
       </section>
       <aside className="space-y-3 lg:sticky lg:top-24 lg:h-fit">
         <ResultSidebar
           lang={lang}
           t={t}
           result={result}
-          loans={loans}
-          reinvestments={reinvestments}
+          loans={debtPlanLoans}
+          waterfall={waterfall}
+          avalancheWaterfall={avalancheWaterfall}
+          monthlyTotal={monthlyTotal}
         />
-        <SavingsVsPayoff
-          lang={lang}
-          loanRate={highestRateLoan.interestRate}
-          loanName={highestRateLoan.name}
-        />
-        <Fear
-          lang={lang}
-          rate={fearRate}
-          setRate={setFearRate}
-          mortgage={mortgage}
-          result={result}
-          stressed={stressed}
-          income={income}
-          setIncome={setIncome}
-          monthly={monthlyTotal}
-        />
+        {highestRateLoan ? (
+          <SavingsVsPayoff
+            lang={lang}
+            loanRate={highestRateLoan.interestRate}
+            loanName={highestRateLoan.name}
+          />
+        ) : null}
+        {mortgage && stressed ? (
+          <Fear
+            lang={lang}
+            rate={fearRate}
+            setRate={setFearRate}
+            mortgage={mortgage}
+            result={result}
+            stressed={stressed}
+            income={income}
+            setIncome={setIncome}
+            monthly={monthlyTotal}
+          />
+        ) : null}
       </aside>
     </main>
   );
@@ -2188,108 +2561,6 @@ function Select({
         {children}
       </select>
     </label>
-  );
-}
-function UniversalCost({ lang, value, setValue }: any) {
-  const sv = lang === "sv",
-    set = (k: string, n: any) => setValue((x: any) => ({ ...x, [k]: n })),
-    total = value.monthly * value.months,
-    buyNet = value.cash - value.residual,
-    diff = total - buyNet;
-  return (
-    <section className="card mt-6 p-4 sm:p-6">
-      <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
-        <div>
-          <h2 className="text-base font-semibold sm:text-lg">
-            {sv
-              ? "Jämför: Leasing vs Köpa? (valfritt)"
-              : "Compare: Lease vs Buy? (optional)"}
-          </h2>
-          {!value.enabled && (
-            <p className="mt-1 text-xs text-white/35">
-              {sv
-                ? "Håll jämförelsen separat från ditt skuldfri-datum."
-                : "Keep this comparison separate from your debt-free date."}
-            </p>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => set("enabled", !value.enabled)}
-          className="button shrink-0"
-          aria-expanded={value.enabled}
-        >
-          {value.enabled
-            ? sv
-              ? "Dölj jämförelse ↑"
-              : "Hide comparison ↑"
-            : sv
-              ? "+ Jämför leasing vs köpa"
-              : "+ Compare lease vs buy"}
-        </button>
-      </div>
-      {value.enabled && (
-        <div className="mt-5 border-t border-white/[.06] pt-5">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label>
-              <small className="label">
-                {sv ? "Beskrivning" : "Description"}
-              </small>
-              <input
-                spellCheck={false}
-                value={value.description}
-                onChange={(e) => set("description", e.target.value)}
-                className="input"
-              />
-            </label>
-            <Field
-              label={sv ? "Kostnad / mån" : "Cost / month"}
-              value={number(value.monthly, lang)}
-              onChange={(n) => set("monthly", n)}
-            />
-            <label className="rounded-2xl border border-white/[.06] bg-black/10 p-3 text-xs text-white/35 sm:col-span-2">
-              <span className="flex justify-between gap-4">
-                <span>{sv ? "Period" : "Period"}</span>
-                <b className="text-white/70">
-                  {value.months} {sv ? "månader" : "months"}
-                </b>
-              </span>
-              <input
-                type="range"
-                min="12"
-                max="60"
-                value={value.months}
-                onChange={(e) => set("months", +e.target.value)}
-                className="mt-2 min-h-11 w-full accent-blue-500"
-              />
-            </label>
-            <Field
-              label={sv ? "Köpa kontant" : "Buy cash"}
-              value={number(value.cash, lang)}
-              onChange={(n) => set("cash", n)}
-            />
-            <Field
-              label={sv ? "Bilens värde efteråt" : "Car value after"}
-              value={number(value.residual, lang)}
-              onChange={(n) => set("residual", n)}
-            />
-            <div className="sm:col-span-2">
-              <Stat
-                label={sv ? "Leasing totalt" : "Leasing total"}
-                value={money(total, lang)}
-              />
-            </div>
-          </div>
-          <div
-            className={`mt-5 rounded-xl p-4 text-sm leading-6 ${diff > 0 ? "bg-orange-500/10 text-orange-200" : "bg-emerald-500/10 text-emerald-200"}`}
-          >
-            {sv
-              ? `Leasing kostar ${money(total, lang)} på ${value.months} mån. Köpa kostar netto ${money(buyNet, lang)} efter bilens värde — leasing är ${money(Math.abs(diff), lang)} ${diff > 0 ? "dyrare" : "billigare"}, men utan värderisk.`
-              : `Leasing costs ${money(total, lang)} over ${value.months} months. Buying costs ${money(buyNet, lang)} net of residual value—leasing is ${money(Math.abs(diff), lang)} ${diff > 0 ? "more expensive" : "cheaper"}, but without resale risk.`}
-          </div>
-        </div>
-      )}
-    </section>
   );
 }
 function Fear({
@@ -2411,8 +2682,10 @@ function RefinanceV5({
   personalTotal,
   setPersonalTotal,
   refinanceDate,
+  baselineMonths,
 }: any) {
   const sv = lang === "sv",
+    savedMonths = Math.max(0, baselineMonths - monthsFromStart(refinanceDate)),
     color =
       bake.ltvAfter < 0.7
         ? "#22C55E"
@@ -2496,6 +2769,10 @@ function RefinanceV5({
         <div className="space-y-4">
           <Stat label={t.newMonthly} value={money(bake.monthAfter, lang)} />
           <Stat label={t.newDate} value={month(refinanceDate, lang)} />
+          <Stat
+            label={sv ? "Sparad tid" : "Time saved"}
+            value={`${savedMonths} ${sv ? "mån" : "months"}`}
+          />
           <div className="card p-6">
             <span className="text-sm text-white/40">{t.saved}</span>
             <div className="mt-3 text-4xl font-semibold text-emerald-300">
