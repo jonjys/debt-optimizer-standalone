@@ -61,7 +61,7 @@ function NumberInput({
 }) {
   return (
     <label className="rounded-2xl border border-white/[.06] bg-black/10 p-3">
-      <small className="block uppercase tracking-wider text-white/25">
+      <small className="block uppercase tracking-wider text-white/55">
         {label}
       </small>
       <span className="mt-1 flex h-7 items-center gap-1">
@@ -72,7 +72,7 @@ function NumberInput({
           onChange={(event) => onChange(parseNumber(event.target.value, max))}
           className="w-full bg-transparent text-base outline-none"
         />
-        {suffix ? <span className="text-xs text-white/25">{suffix}</span> : null}
+        {suffix ? <span className="text-xs text-white/55">{suffix}</span> : null}
       </span>
     </label>
   );
@@ -109,7 +109,7 @@ export function SortableLoanCard({
           {...attributes}
           {...listeners}
           aria-label={label}
-          className="absolute right-11 top-4 z-10 grid h-8 w-8 touch-none place-items-center rounded-lg border border-white/[.06] bg-white/[.04] text-sm tracking-[-3px] text-white/35 hover:border-blue-400/30 hover:text-blue-200"
+          className="absolute right-11 top-4 z-10 grid h-8 w-8 touch-none place-items-center rounded-lg border border-white/[.06] bg-white/[.04] text-sm tracking-[-3px] text-white/65 hover:border-blue-400/30 hover:text-blue-200"
         >
           ⋮⋮
         </button>
@@ -130,7 +130,7 @@ export function TimeBoxControl({
 }) {
   const sv = lang === "sv";
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-white/[.05] bg-black/10 px-3 py-2 text-xs text-white/45">
+    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-white/[.05] bg-black/10 px-3 py-2 text-xs text-white/65">
       <label className="flex items-center gap-2">
         <input
           type="checkbox"
@@ -157,7 +157,7 @@ export function TimeBoxControl({
             className="h-8 w-20 rounded-lg border border-white/[.08] bg-white/[.04] px-2 text-white outline-none"
           />
           <span>{sv ? "Månader" : "Months"}</span>
-          <span className="text-white/25">
+          <span className="text-white/55">
             {sv ? "sedan flyttas resten sist" : "then the remainder moves last"}
           </span>
         </>
@@ -225,7 +225,7 @@ export function LeasingLoanFields({
       </div>
 
       <div className="mt-4 rounded-xl border border-white/[.05] bg-black/10 p-3">
-        <div className="flex items-center justify-between gap-3 text-xs text-white/40">
+        <div className="flex items-center justify-between gap-3 text-xs text-white/65">
           <span>{sv ? "Hyrtid" : "Lease term"}</span>
           <b className="text-white/70">{value.months} {sv ? "mån" : "mo"}</b>
         </div>
@@ -282,7 +282,7 @@ export function LeasingLoanFields({
         />
       </div>
 
-      <label className="mt-4 block text-xs text-white/40">
+      <label className="mt-4 block text-xs text-white/65">
         <span className="flex justify-between gap-3">
           <span>{sv ? "Om räntan går upp" : "If the rate rises"}</span>
           <b className="text-orange-300">+{formatRate(value.rateIncrease, lang)} %</b>
@@ -300,11 +300,11 @@ export function LeasingLoanFields({
 
       <div className="mt-4 grid gap-2 text-sm sm:grid-cols-3">
         <div className="rounded-xl bg-white/[.035] p-3">
-          <span className="text-white/35">{sv ? "Total hyrkostnad" : "Total lease cost"}</span>
+          <span className="text-white/65">{sv ? "Total hyrkostnad" : "Total lease cost"}</span>
           <b className="mt-1 block">{formatBig(calculation.leasingTotal, lang)} kr</b>
         </div>
         <div className="rounded-xl bg-white/[.035] p-3">
-          <span className="text-white/35">{sv ? "Månad om köp" : "Monthly if buying"}</span>
+          <span className="text-white/65">{sv ? "Månad om köp" : "Monthly if buying"}</span>
           <b className="mt-1 block">{formatBig(calculation.buyMonthly, lang)} kr</b>
         </div>
         <div className={`rounded-xl p-3 ${calculation.diff.gt(0) ? "bg-orange-500/10 text-orange-200" : "bg-emerald-500/10 text-emerald-200"}`}>

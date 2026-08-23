@@ -259,11 +259,22 @@ const COPY = {
 } as const;
 
 const TAB_LABELS = {
-  en: { today: "Today", compare: "What is best?", refinance: "Refinance" },
-  sv: { today: "Idag", compare: "Vad är bäst?", refinance: "Baka in" },
+  en: {
+    today: "My debts",
+    compare: "What is best?",
+    refinance: "Move to mortgage",
+  },
+  sv: {
+    today: "Mina lån",
+    compare: "Vad är bäst?",
+    refinance: "Flytta till bolånet",
+  },
 } as const;
-(COPY.en.tabs as { compare: string }).compare = TAB_LABELS.en.compare;
-(COPY.sv.tabs as { compare: string }).compare = TAB_LABELS.sv.compare;
+// TAB_LABELS är sanningen för flikarnas namn — COPY.tabs speglar den.
+// (Tidigare kopierades bara `compare` över, så `today`/`refinance` i
+// TAB_LABELS var död kod och headern visade de gamla namnen.)
+Object.assign(COPY.en.tabs, TAB_LABELS.en);
+Object.assign(COPY.sv.tabs, TAB_LABELS.sv);
 
 const initialLoans: Loan[] = [
   {
@@ -340,7 +351,7 @@ function CountUp({ value, lang }: { value: number; lang: Lang }) {
 }
 
 export default function Page() {
-  const [lang, setLang] = useState<Lang>("en");
+  const [lang, setLang] = useState<Lang>("sv");
   const [tab, setTab] = useState<Tab>("today");
   const [loans, setLoans] = useState<Loan[]>([]);
   const [started, setStarted] = useState(false);
@@ -372,7 +383,14 @@ export default function Page() {
 
   useEffect(() => {
     const saved = localStorage.getItem("debtkill-lang");
-    if (saved === "en" || saved === "sv") setLang(saved);
+    if (saved === "en" || saved === "sv") {
+      setLang(saved);
+      return;
+    }
+    // Ingen sparad preferens: svenska är default (CSN, blancolån och
+    // Elgiganten-avbetalning är svenska begrepp), men en besökare med ett
+    // icke-svenskt språk i webbläsaren får engelska.
+    if (!navigator.language?.toLowerCase().startsWith("sv")) setLang("en");
   }, []);
   useEffect(() => {
     setLoans((current) =>
@@ -650,7 +668,7 @@ export default function Page() {
   };
 
   return (
-    <div className="min-h-screen bg-[#06060A] text-white selection:bg-blue-500/30 [background-image:linear-gradient(rgba(255,255,255,.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.03)_1px,transparent_1px)] [background-size:24px_24px]">
+    <div className="min-h-screen bg-[#06060A] text-white selection:bg-blue-500/30">
       <Header lang={lang} tab={tab} setTab={setTab} setLang={setLanguage} />
       {!started && (
         <Landing lang={lang} onStart={startFree} onSample={fillSample} />
@@ -659,7 +677,7 @@ export default function Page() {
         <div ref={appRef} className="scroll-mt-20">
           <button
             onClick={() => setStarted(false)}
-            className="ml-5 mt-5 text-xs text-white/35 hover:text-white md:ml-10"
+            className="ml-5 mt-5 text-xs text-white/65 hover:text-white md:ml-10"
           >
             ← {lang === "sv" ? "Tillbaka" : "Back"}
           </button>
@@ -767,13 +785,13 @@ export default function Page() {
           {toast}
         </div>
       )}
-      <footer className="mx-auto max-w-[1280px] px-5 py-8 text-center text-[11px] text-white/25">
+      <footer className="mx-auto max-w-[1280px] px-5 py-8 text-center text-[12px] text-white/55">
         <p>
           {lang === "sv"
             ? "All matematik körs i din webbläsare. Ingen spårning. Ingen kostnad. Byggd med Big.js. 🇸🇪"
             : "All math runs in your browser. No tracking. No cost. Built with Big.js. 🇸🇪"}
         </p>
-        <span className="mt-3 inline-flex rounded-full border border-white/[.06] px-3 py-1.5 text-white/35">
+        <span className="mt-3 inline-flex rounded-full border border-white/[.06] px-3 py-1.5 text-white/65">
           Coming soon on Product Hunt
         </span>
       </footer>
@@ -801,7 +819,7 @@ function Header({
             <TrendingDown size={18} />
           </span>
           <b>DebtKill</b>
-          <span className="rounded-full border border-blue-400/20 bg-blue-500/10 px-2 py-1 text-[9px] font-bold tracking-widest text-blue-300">
+          <span className="rounded-full border border-blue-400/20 bg-blue-500/10 px-2 py-1 text-[11px] font-bold tracking-widest text-blue-300">
             PRO
           </span>
         </div>
@@ -810,18 +828,18 @@ function Header({
             <button
               key={key}
               onClick={() => setTab(key)}
-              className={`rounded-full px-5 py-2 text-xs transition ${tab === key ? "bg-white/10 text-white" : "text-white/35 hover:text-white/70"}`}
+              className={`rounded-full px-5 py-2 text-xs transition ${tab === key ? "bg-white/10 text-white" : "text-white/65 hover:text-white/70"}`}
             >
               {t.tabs[key]}
             </button>
           ))}
         </nav>
-        <div className="rounded-full border border-white/[.07] p-1 text-[11px] font-semibold">
+        <div className="rounded-full border border-white/[.07] p-1 text-[12px] font-semibold">
           {(["en", "sv"] as Lang[]).map((x) => (
             <button
               key={x}
               onClick={() => setLang(x)}
-              className={`rounded-full px-3 py-1.5 ${lang === x ? "bg-white/10" : "text-white/30"}`}
+              className={`rounded-full px-3 py-1.5 ${lang === x ? "bg-white/10" : "text-white/55"}`}
             >
               {x.toUpperCase()}
             </button>
@@ -901,7 +919,7 @@ function Today(p: any) {
                       setLoans((a: Loan[]) => a.filter((x) => x.id !== loan.id))
                     }
                   >
-                    <X size={15} className="text-white/25" />
+                    <X size={15} className="text-white/55" />
                   </button>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -933,7 +951,7 @@ function Today(p: any) {
                   />
                 </div>
                 <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-white/[.05] bg-black/10 p-4 md:flex-row md:items-end">
-                  <label className="flex-1 text-[11px] text-white/35">
+                  <label className="flex-1 text-[12px] text-white/65">
                     {t.when} <b className="text-white/65">{loan.name}</b>{" "}
                     {month(payoff?.newEndDate || "-", lang)} {t.paid}
                     <select
@@ -953,7 +971,7 @@ function Today(p: any) {
                     </select>
                   </label>
                   {rule && (
-                    <label className="w-full text-[11px] text-white/35 md:w-48">
+                    <label className="w-full text-[12px] text-white/65 md:w-48">
                       {t.amount}
                       <div className="mt-2 flex items-center rounded-xl border border-white/[.07] bg-[#17171d] px-3">
                         <input
@@ -987,7 +1005,7 @@ function Today(p: any) {
           )}
           <button
             onClick={() => setLoans([])}
-            className="ml-auto flex gap-2 p-2 text-xs text-white/30"
+            className="ml-auto flex gap-2 p-2 text-xs text-white/55"
           >
             <RefreshCw size={13} />
             {t.reset}
@@ -1050,7 +1068,7 @@ function ResultSidebar({
   return (
     <aside className="space-y-3">
       <div className="relative min-h-[120px] overflow-hidden rounded-xl border border-blue-400/20 bg-blue-500/[.09] p-4 shadow-[inset_0_0_45px_rgba(59,130,246,.08)] backdrop-blur-xl">
-        <div className="flex justify-between text-[10px] font-bold tracking-[.18em] text-blue-300">
+        <div className="flex justify-between text-[12px] font-bold tracking-[.18em] text-blue-300">
           {t.free}
           <ShieldCheck size={17} />
         </div>
@@ -1058,7 +1076,7 @@ function ResultSidebar({
           {month(freedomDate, lang)}
         </div>
         {freedomDate === "-" ? (
-          <span className={`mt-4 inline-flex rounded-full px-3 py-1.5 text-xs font-semibold ${hasDebts ? "bg-red-400/10 text-red-300" : "bg-white/[.06] text-white/45"}`}>
+          <span className={`mt-4 inline-flex rounded-full px-3 py-1.5 text-xs font-semibold ${hasDebts ? "bg-red-400/10 text-red-300" : "bg-white/[.06] text-white/65"}`}>
             {hasDebts
               ? lang === "sv"
                 ? "Betalningen är för låg"
@@ -1078,7 +1096,7 @@ function ResultSidebar({
         ) : null}
       </div>
       <div className="card p-6">
-        <span className="text-sm text-white/40">
+        <span className="text-sm text-white/65">
           {usesWaterfall || singleLoan
             ? lang === "sv"
               ? "Total ränta"
@@ -1089,15 +1107,17 @@ function ResultSidebar({
           <CountUp value={interestValue} lang={lang} />
         </div>
         {typeof monthlyTotal === "number" ? (
-          <p className="mt-3 text-xs text-white/35">
+          <p className="mt-3 text-xs text-white/65">
             {lang === "sv" ? "Total månadskostnad" : "Total monthly outflow"}: {money(monthlyTotal, lang)}
           </p>
         ) : null}
       </div>
       {usesWaterfall && avalancheWaterfall ? (
         <div className="card p-5">
-          <div className="mb-3 text-xs font-semibold uppercase tracking-[.14em] text-white/35">
-            {lang === "sv" ? "Din ordning vs lavin" : "Your order vs avalanche"}
+          <div className="mb-3 text-xs font-semibold uppercase tracking-[.14em] text-white/65">
+            {lang === "sv"
+              ? "Din ordning vs billigaste vägen"
+              : "Your order vs the cheapest route"}
           </div>
           <div className="space-y-3 text-xs">
             <div className="rounded-xl border border-blue-400/15 bg-blue-500/[.06] p-3">
@@ -1105,17 +1125,22 @@ function ResultSidebar({
                 <b>{lang === "sv" ? "Din ordning" : "Your order"}</b>
                 <span>{month(customDate, lang)}</span>
               </div>
-              <p className="mt-1 text-white/40">
+              <p className="mt-1 text-white/65">
                 {lang === "sv" ? "Ränta" : "Interest"} {money(waterfall.totalInterest, lang)}
               </p>
             </div>
             <div className="rounded-xl border border-emerald-400/15 bg-emerald-500/[.06] p-3">
               <div className="flex items-center justify-between gap-3">
-                <b>{lang === "sv" ? "Lavin" : "Avalanche"}</b>
+                <b>
+                  {lang === "sv" ? "Billigaste vägen" : "Cheapest route"}
+                </b>
                 <span>{month(avalancheDate, lang)}</span>
               </div>
-              <p className="mt-1 text-white/40">
-                {lang === "sv" ? "Ränta" : "Interest"} {money(avalancheWaterfall.totalInterest, lang)}
+              <p className="mt-1 text-white/65">
+                {lang === "sv"
+                  ? "Högsta räntan först · Ränta"
+                  : "Highest rate first · Interest"}{" "}
+                {money(avalancheWaterfall.totalInterest, lang)}
               </p>
               <p className="mt-2 font-medium text-emerald-300">
                 {interestSavedByAvalanche > 0
@@ -1132,7 +1157,7 @@ function ResultSidebar({
         </div>
       ) : null}
       <div className="card p-5">
-        <div className="mb-2 text-xs text-white/35">{t.payoff}</div>
+        <div className="mb-2 text-xs text-white/65">{t.payoff}</div>
         {payoffRows.map((x: any, index: number) => (
           <div
             key={x.id}
@@ -1155,11 +1180,11 @@ function ResultSidebar({
               </span>
             </div>
             {usesWaterfall ? (
-              <div className="ml-9 mt-1 text-[10px] text-white/30">
+              <div className="ml-9 mt-1 text-[12px] text-white/55">
                 {x.isAnchor
                   ? lang === "sv"
-                    ? `${x.independentMonths} mån · oberoende ankare`
-                    : `${x.independentMonths} months · independent anchor`
+                    ? `${x.independentMonths} mån · betalas av för sig`
+                    : `${x.independentMonths} months · paid off on its own`
                   : lang === "sv"
                     ? `${x.waitMonths} mån väntan + ${x.focusMonths} mån fokus`
                     : `${x.waitMonths} months waiting + ${x.focusMonths} months focused`}
@@ -1175,7 +1200,7 @@ function ResultSidebar({
               .map((r: Reinvestment) => (
                 <div
                   key={r.fromLoanId}
-                  className="ml-9 mt-2 flex items-center gap-1 text-[10px] text-blue-300"
+                  className="ml-9 mt-2 flex items-center gap-1 text-[12px] text-blue-300"
                 >
                   <ArrowRight size={11} />
                   {number(r.amount, lang)} kr →{" "}
@@ -1289,7 +1314,7 @@ function StrategyCard({ name, note, color, result, lang, t }: any) {
       <div className="flex justify-between">
         <div>
           <h2 className="text-xl font-semibold">{name}</h2>
-          <p className="text-xs text-white/35">{note}</p>
+          <p className="text-xs text-white/65">{note}</p>
         </div>
         <span
           className="rounded-full px-3 py-1 text-xs"
@@ -1306,7 +1331,7 @@ function StrategyCard({ name, note, color, result, lang, t }: any) {
       >
         <div className="grid h-full w-full place-items-center rounded-full bg-[#101015] text-center">
           <div>
-            <small className="text-white/30">{t.free}</small>
+            <small className="text-white/55">{t.free}</small>
             <b className="mt-1 block text-xl">
               {month(result.newFreedomDate, lang)}
             </b>
@@ -1384,7 +1409,7 @@ function Refinance({
           </div>
           <div className="mt-10">
             <div className="mb-4 flex justify-between">
-              <span className="text-sm text-white/45">{t.baked}</span>
+              <span className="text-sm text-white/65">{t.baked}</span>
               <b>{money(bake.bake, lang)}</b>
             </div>
             <input
@@ -1395,7 +1420,7 @@ function Refinance({
               onChange={(e) => setBakePct(Number(e.target.value))}
               className="h-3 w-full cursor-pointer appearance-none rounded-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 accent-white"
             />
-            <div className="mt-3 flex justify-between text-xs text-white/25">
+            <div className="mt-3 flex justify-between text-xs text-white/55">
               <span>0%</span>
               <span>{bakePct}%</span>
               <span>100%</span>
@@ -1403,7 +1428,7 @@ function Refinance({
           </div>
           <div className="mt-9 rounded-[20px] border border-white/[.06] bg-black/15 p-6">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-white/40">{t.newLtv}</span>
+              <span className="text-sm text-white/65">{t.newLtv}</span>
               <b className="text-4xl" style={{ color }}>
                 {(bake.ltvAfter * 100).toFixed(1)}%
               </b>
@@ -1428,7 +1453,7 @@ function Refinance({
         </div>
         <div className="space-y-4">
           <div className="card p-6">
-            <span className="text-sm text-white/40">{t.newMonthly}</span>
+            <span className="text-sm text-white/65">{t.newMonthly}</span>
             <div className="mt-3 text-4xl font-semibold">
               {money(bake.monthAfter, lang)}
             </div>
@@ -1440,17 +1465,17 @@ function Refinance({
             </div>
           </div>
           <div className="card p-6">
-            <span className="text-sm text-white/40">{t.newDate}</span>
+            <span className="text-sm text-white/65">{t.newDate}</span>
             <div className="mt-3 text-4xl font-semibold">
               {month(refinanceDate, lang)}
             </div>
           </div>
           <div className="card p-6">
-            <span className="text-sm text-white/40">{t.saved}</span>
+            <span className="text-sm text-white/65">{t.saved}</span>
             <div className="mt-3 text-4xl font-semibold text-emerald-300">
               <CountUp value={Math.max(0, bake.interestSavedNet)} lang={lang} />
             </div>
-            <p className="mt-3 text-xs leading-5 text-white/25">
+            <p className="mt-3 text-xs leading-5 text-white/55">
               {bake.summaryLine}
             </p>
           </div>
@@ -1509,7 +1534,7 @@ function Landing({
             {sv ? "Fyll exempel" : "Fill sample data"}
           </button>
         </div>
-        <div className="mt-12 text-[10px] font-medium uppercase tracking-[2px] text-white/30 md:text-xs">
+        <div className="mt-12 text-[12px] font-medium uppercase tracking-[2px] text-white/55 md:text-xs">
           {sv
             ? "SEK · EUR · USD · LOKAL MATEMATIK · INGEN SPÅRNING · FUNGERAR OFFLINE"
             : "SEK · EUR · USD · LOCAL MATH · NO TRACKING · WORKS OFFLINE"}
@@ -1538,7 +1563,7 @@ function Title({
         <h1 className="mt-2 text-3xl font-semibold tracking-[-.04em] md:text-4xl">
           {title}
         </h1>
-        <p className="mt-2 text-sm text-white/35">{sub}</p>
+        <p className="mt-2 text-sm text-white/65">{sub}</p>
       </div>
       {action}
     </div>
@@ -1561,7 +1586,7 @@ function Field({
 }) {
   return (
     <label className="rounded-2xl border border-white/[.06] bg-black/10 p-3">
-      <small className="block uppercase tracking-wider text-white/25">
+      <small className="block uppercase tracking-wider text-white/55">
         {label}
       </small>
       <span className="mt-1 flex h-7 items-center">
@@ -1583,9 +1608,9 @@ function Field({
                 : 0,
             );
           }}
-          className="w-full bg-transparent text-base outline-none read-only:text-white/45"
+          className="w-full bg-transparent text-base outline-none read-only:text-white/65"
         />
-        <span className="text-xs text-white/25">{suffix}</span>
+        <span className="text-xs text-white/55">{suffix}</span>
       </span>
     </label>
   );
@@ -1593,7 +1618,7 @@ function Field({
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-2xl border border-white/[.06] bg-black/10 p-4">
-      <small className="uppercase tracking-wider text-white/25">{label}</small>
+      <small className="uppercase tracking-wider text-white/55">{label}</small>
       <b className="mt-2 block text-lg">{value}</b>
     </div>
   );
@@ -1613,7 +1638,7 @@ function Preview({
     <div
       className={`absolute w-52 rounded-2xl border border-white/10 bg-white/[.07] p-4 shadow-2xl backdrop-blur-xl ${c}`}
     >
-      <div className="flex justify-between text-xs text-white/45">
+      <div className="flex justify-between text-xs text-white/65">
         {name}
         {icon}
       </div>
@@ -1624,7 +1649,7 @@ function Preview({
 function Mini({ label, value }: { label: string; value: string }) {
   return (
     <div className="px-2 text-center">
-      <small className="block text-[9px] text-white/30">{label}</small>
+      <small className="block text-[11px] text-white/55">{label}</small>
       <b className="text-xs">{value}</b>
     </div>
   );
@@ -1673,7 +1698,7 @@ function BestView({ lang, t, cheapest, smallest, loans, setLoans }: any) {
               ? "Egen ordning — dra för att ändra"
               : "Your order — drag to change"}
           </h2>
-          <p className="mt-1 text-xs text-white/35">
+          <p className="mt-1 text-xs text-white/65">
             {sv
               ? "Du bestämmer vad som känns viktigast"
               : "You decide what matters most"}
@@ -1725,13 +1750,13 @@ function Choice({
       <div className="flex justify-between text-2xl">
         <span>{icon}</span>
         {best && (
-          <span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[10px] font-bold text-emerald-300">
+          <span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[12px] font-bold text-emerald-300">
             BEST
           </span>
         )}
       </div>
       <h2 className="mt-3 font-semibold">{title}</h2>
-      <p className="mt-1 text-xs text-white/35">{text}</p>
+      <p className="mt-1 text-xs text-white/65">{text}</p>
       <p className="mt-5 text-sm text-white/60">{date}</p>
     </div>
   );
@@ -1781,7 +1806,7 @@ function FamilyLoanFields({
             : "Below 1% may be treated as a gift. Use a documented market-based rate."}
         </p>
       )}
-      <p className="mt-2 text-[11px] text-white/35">
+      <p className="mt-2 text-[12px] text-white/65">
         {sv
           ? "Inom familj: Ingen UC, men skriv papper. Räntan är avdragsgill om ni skriver skuldebrev. Under 1,5% kan ses som gåva av Skatteverket."
           : "Family loan: no credit check, but document it. Interest may be deductible with a written agreement."}
@@ -1849,7 +1874,7 @@ function SavingsVsPayoff({
           decimal
           onChange={(v) => setDebtRate(v / 100)}
         />
-        <label className="flex items-center gap-2 text-[11px] text-white/45">
+        <label className="flex items-center gap-2 text-[12px] text-white/65">
           <input
             type="checkbox"
             checked={deduction}
@@ -1858,7 +1883,7 @@ function SavingsVsPayoff({
           {sv ? "Efter 30% ränteavdrag" : "After 30% deduction"}
         </label>
       </div>
-      <div className="mt-4 space-y-2 text-[11px]">
+      <div className="mt-4 space-y-2 text-[12px]">
         <Bar
           label={sv ? "Spara" : "Save"}
           value={save}
@@ -1884,7 +1909,7 @@ function SavingsVsPayoff({
             ? `Spara — ${money(-diff, lang)}/år bättre`
             : `Save — ${money(-diff, lang)}/year better`}
       </div>
-      <p className="mt-2 text-center text-[10px] text-white/30">
+      <p className="mt-2 text-center text-[12px] text-white/55">
         {sv ? "På 5 år" : "Over 5 years"}: {money(Math.abs(diff) * 5, lang)}{" "}
         {sv ? "skillnad" : "difference"}
       </p>
@@ -2165,10 +2190,10 @@ function TodayV5(p: any) {
             </button>
           ))}
         </div>
-        <p className="mb-3 text-xs text-white/30">
+        <p className="mb-3 text-xs text-white/65">
           {sv
-            ? "Dra lånen för att välja ordning. Första lånet är alltid ditt oberoende ankare."
-            : "Drag debts to choose the order. The first debt is always your independent anchor."}
+            ? "Dra lånen för att välja i vilken ordning du betalar av dem. Det översta lånet betalas av först — när det är klart går pengarna vidare till nästa."
+            : "Drag your debts to choose the order you pay them off. The top one is paid first — when it's done, that money rolls into the next."}
         </p>
         <DndContext
           sensors={dragSensors}
@@ -2243,7 +2268,7 @@ function TodayV5(p: any) {
                               />
                             </label>
                           ) : (
-                            <div className="rounded-xl border border-white/[.05] bg-white/[.025] p-3 text-xs text-white/35">
+                            <div className="rounded-xl border border-white/[.05] bg-white/[.025] p-3 text-xs text-white/65">
                               {sv
                                 ? "Jämförelse — påverkar inte skuldfri-datum"
                                 : "Comparison — does not affect debt-free date"}
@@ -2271,11 +2296,11 @@ function TodayV5(p: any) {
                             });
                           }}
                         >
-                          <X size={15} className="text-white/25" />
+                          <X size={15} className="text-white/55" />
                         </button>
                       </div>
                       <p
-                        className={`ml-14 mt-2 text-[11px] ${kind === "credit" ? "text-red-400" : "text-white/30"}`}
+                        className={`ml-14 mt-2 text-[12px] ${kind === "credit" ? "text-red-400" : "text-white/55"}`}
                       >
                         {meta[sv ? "helpSv" : "helpEn"]}
                       </p>
@@ -2309,36 +2334,6 @@ function TodayV5(p: any) {
                               }
                             />
                           ) : null}
-                          <div className="ml-0 mt-4 max-w-sm md:ml-14">
-                            <Select
-                              label={
-                                sv ? "Hur betalar du? ⓘ" : "How do you pay? ⓘ"
-                              }
-                              value={amortKinds[loan.id] || "annuity"}
-                              onChange={(value) =>
-                                changeAmort(loan, value as AmortKind)
-                              }
-                            >
-                              <option value="fixed_amort">
-                                {sv
-                                  ? "Rak amortering"
-                                  : "Straight-line principal"}
-                              </option>
-                              <option value="annuity">
-                                {sv ? "Annuitet" : "Annuity"}
-                              </option>
-                              <option value="interest_free">
-                                {sv
-                                  ? "Räntefritt / Amorteringsfritt"
-                                  : "Interest-free / Payment holiday"}
-                              </option>
-                            </Select>
-                            <p className="mt-2 text-[10px] text-white/25">
-                              {sv
-                                ? "Rak: samma amortering + sjunkande ränta. Annuitet: samma total varje månad."
-                                : "Straight-line: same principal + declining interest. Annuity: same total each month."}
-                            </p>
-                          </div>
                           <div className="mt-5 grid gap-3 sm:grid-cols-3">
                             <Field
                               label={t.balance}
@@ -2375,7 +2370,7 @@ function TodayV5(p: any) {
                                 }}
                               />
                               {kind === "mortgage" || kind === "personal" ? (
-                                <p className="mt-1 px-1 text-[10px] text-white/25">
+                                <p className="mt-1 px-1 text-[12px] text-white/55">
                                   {kind === "mortgage"
                                     ? "0,1–15 %"
                                     : "0,1–30 %"}
@@ -2428,26 +2423,13 @@ function TodayV5(p: any) {
                                   : "Not debt-free within 50 years at this payment"
                                 : waterfallLoan.isAnchor
                                   ? sv
-                                    ? `Skuldfri om ${waterfallLoan.independentMonths} mån (oberoende)`
-                                    : `Debt-free in ${waterfallLoan.independentMonths} months (independent)`
+                                    ? `Klart om ${waterfallLoan.independentMonths} mån — betalas av för sig`
+                                    : `Done in ${waterfallLoan.independentMonths} months — paid off on its own`
                                   : sv
-                                    ? `Skuldfri om ${waterfallLoan.finishesAt} mån totalt (${waterfallLoan.waitMonths} mån väntan + ${waterfallLoan.focusMonths} mån)`
-                                    : `Debt-free in ${waterfallLoan.finishesAt} months total (${waterfallLoan.waitMonths} waiting + ${waterfallLoan.focusMonths} focused)`}
+                                    ? `Klart om ${waterfallLoan.finishesAt} mån: ${waterfallLoan.waitMonths} mån medan lånen ovanför betalas av, sedan ${waterfallLoan.focusMonths} mån med full kraft här`
+                                    : `Done in ${waterfallLoan.finishesAt} months: ${waterfallLoan.waitMonths} while the debts above are paid off, then ${waterfallLoan.focusMonths} at full force here`}
                             </div>
                           ) : null}
-
-                          <TimeBoxControl
-                            lang={lang}
-                            value={timeBox}
-                            onChange={(next) =>
-                              setTimeBoxes(
-                                (current: Record<string, TimeBox>) => ({
-                                  ...current,
-                                  [loan.id]: next,
-                                }),
-                              )
-                            }
-                          />
 
                           <button
                             type="button"
@@ -2461,38 +2443,87 @@ function TodayV5(p: any) {
                           >
                             {advanced
                               ? sv
-                                ? "Visa mindre ↑"
-                                : "Show less ↑"
+                                ? "Visa färre inställningar ↑"
+                                : "Show fewer settings ↑"
                               : sv
-                                ? "Visa mer ↓"
-                                : "Show more ↓"}
+                                ? "Fler inställningar ↓"
+                                : "More settings ↓"}
                           </button>
                           {advanced ? (
-                            <div className="mt-4 rounded-2xl border border-white/[.05] bg-black/10 p-4">
-                              <Field
-                                label={t.extra}
-                                value={number(loan.extraMonthly || 0, lang)}
-                                onChange={(value) =>
-                                  updateLoan(loan.id, "extraMonthly", value)
+                            <div className="mt-4 space-y-4 rounded-2xl border border-white/[.05] bg-black/10 p-4">
+                              <div className="max-w-sm">
+                                <Select
+                                  label={
+                                    sv ? "Hur betalar du?" : "How do you pay?"
+                                  }
+                                  value={amortKinds[loan.id] || "annuity"}
+                                  onChange={(value) =>
+                                    changeAmort(loan, value as AmortKind)
+                                  }
+                                >
+                                  <option value="fixed_amort">
+                                    {sv
+                                      ? "Rak amortering"
+                                      : "Straight-line principal"}
+                                  </option>
+                                  <option value="annuity">
+                                    {sv ? "Annuitet" : "Annuity"}
+                                  </option>
+                                  <option value="interest_free">
+                                    {sv
+                                      ? "Räntefritt / Amorteringsfritt"
+                                      : "Interest-free / Payment holiday"}
+                                  </option>
+                                </Select>
+                                <p className="mt-2 text-[12px] text-white/65">
+                                  {sv
+                                    ? "Rak amortering: du betalar av lika mycket varje månad, och räntan sjunker efter hand — så månadskostnaden blir lägre med tiden. Annuitet: du betalar exakt lika mycket varje månad hela vägen."
+                                    : "Straight-line: you pay off the same amount each month and the interest shrinks over time, so the monthly cost drops. Annuity: you pay exactly the same amount every month throughout."}
+                                </p>
+                              </div>
+
+                              <TimeBoxControl
+                                lang={lang}
+                                value={timeBox}
+                                onChange={(next) =>
+                                  setTimeBoxes(
+                                    (current: Record<string, TimeBox>) => ({
+                                      ...current,
+                                      [loan.id]: next,
+                                    }),
+                                  )
                                 }
                               />
-                              <p className="mt-3 text-xs text-white/40">
-                                {sv
-                                  ? `När lånet är klart flyttas ${number(loan.currentMonthlyPayment + (loan.extraMonthly || 0), lang)} kr/mån automatiskt till nästa lån.`
-                                  : `When paid, SEK ${number(loan.currentMonthlyPayment + (loan.extraMonthly || 0), lang)}/month automatically rolls into the next debt.`}
-                              </p>
-                              <p className="mt-2 text-xs text-white/40">
-                                {sv ? "Du betalar totalt" : "You pay a total of"}{" "}
-                                <b className="text-white">
-                                  {money(
-                                    loan.balance + (waterfallLoan?.interest || 0),
-                                    lang,
-                                  )}
-                                </b>{" "}
-                                · {sv ? "varav" : "including"}{" "}
-                                {money(waterfallLoan?.interest || 0, lang)}{" "}
-                                {sv ? "ränta" : "interest"}
-                              </p>
+
+                              <div>
+                                <Field
+                                  label={t.extra}
+                                  value={number(loan.extraMonthly || 0, lang)}
+                                  onChange={(value) =>
+                                    updateLoan(loan.id, "extraMonthly", value)
+                                  }
+                                />
+                                <p className="mt-3 text-xs text-white/65">
+                                  {sv
+                                    ? `När lånet är klart flyttas ${number(loan.currentMonthlyPayment + (loan.extraMonthly || 0), lang)} kr/mån automatiskt till nästa lån.`
+                                    : `When paid, SEK ${number(loan.currentMonthlyPayment + (loan.extraMonthly || 0), lang)}/month automatically rolls into the next debt.`}
+                                </p>
+                                <p className="mt-2 text-xs text-white/65">
+                                  {sv
+                                    ? "Du betalar totalt"
+                                    : "You pay a total of"}{" "}
+                                  <b className="text-white">
+                                    {money(
+                                      loan.balance +
+                                        (waterfallLoan?.interest || 0),
+                                      lang,
+                                    )}
+                                  </b>{" "}
+                                  · {sv ? "varav" : "including"}{" "}
+                                  {money(waterfallLoan?.interest || 0, lang)}{" "}
+                                  {sv ? "ränta" : "interest"}
+                                </p>
+                              </div>
                             </div>
                           ) : null}
                         </>
@@ -2585,7 +2616,7 @@ function Fear({
   return (
     <div className="card rounded-xl p-3">
       <div className="flex items-center justify-between">
-        <b>{sv ? "Farhågor" : "What if"} 🔮</b>
+        <b>{sv ? "Tänk om räntan stiger" : "What if rates rise"}</b>
         <input
           type="number"
           min="0.1"
@@ -2598,7 +2629,7 @@ function Fear({
           className="h-8 w-20 rounded-lg border border-white/10 bg-black/20 px-2 text-right text-xs text-orange-300 outline-none"
         />
       </div>
-      <p className="mt-4 text-xs text-white/40">
+      <p className="mt-4 text-xs text-white/65">
         {sv ? "Om räntan går upp" : "If rates increase"} +{rate}%
       </p>
       <input
@@ -2631,7 +2662,7 @@ function Fear({
         {sv ? "total ränta" : "total interest"} ·{" "}
         {sv ? "skuldfri" : "debt-free"} {month(stressed.newFreedomDate, lang)}
       </div>
-      <label className="mt-4 block text-xs text-white/35">
+      <label className="mt-4 block text-xs text-white/65">
         {sv ? "Nettoinkomst (valfritt)" : "Net income (optional)"}
         <input
           spellCheck={false}
@@ -2641,7 +2672,7 @@ function Fear({
           className="input mt-2"
         />
       </label>
-      <label className="mt-3 block text-xs text-white/35">
+      <label className="mt-3 block text-xs text-white/65">
         {sv ? "Om inkomsten går ner" : "If income drops"} {incomeDrop}%
         <input
           type="range"
@@ -2746,7 +2777,7 @@ function RefinanceV5({
             onChange={(e) => setBakeAmount(+e.target.value)}
             className="mt-5 h-3 w-full cursor-pointer appearance-none rounded-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 accent-white"
           />
-          <p className="mt-3 text-sm text-white/45">
+          <p className="mt-3 text-sm text-white/65">
             {sv ? "Baka in" : "Bake in"}{" "}
             {personalTotal ? Math.round((bake.bake / personalTotal) * 100) : 0}%
             = <b className="text-white">{money(bake.bake, lang)}</b>
@@ -2774,7 +2805,7 @@ function RefinanceV5({
             value={`${savedMonths} ${sv ? "mån" : "months"}`}
           />
           <div className="card p-6">
-            <span className="text-sm text-white/40">{t.saved}</span>
+            <span className="text-sm text-white/65">{t.saved}</span>
             <div className="mt-3 text-4xl font-semibold text-emerald-300">
               <CountUp value={Math.max(0, bake.interestSavedNet)} lang={lang} />
             </div>
