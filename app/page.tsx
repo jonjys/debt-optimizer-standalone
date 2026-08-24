@@ -355,6 +355,57 @@ function CountUp({ value, lang }: { value: number; lang: Lang }) {
   return <>{money(shown, lang)}</>;
 }
 
+// Adapter to convert canonical PlanResult to legacy CalculationResult format
+function planResultToCalculationResult(
+  plan: PlanResult,
+  baseline: PlanResult,
+): CalculationResult {
+  const firstPaidMonths = plan.loans
+    .filter((l) => l.fullyPaid && l.finishMonth !== null)
+    .map((l) => l.finishMonth as number);
+
+  // Create a map of baseline results by loan ID for easy lookup
+  const baselineMap = new Map(baseline.loans.map((l) => [l.id, l]));
+
+  return {
+    totalOriginalInterest: baseline.totalInterest,
+    totalNewInterest: plan.totalInterest,
+    totalInterestSaved: baseline.totalInterest - plan.totalInterest,
+    originalFreedomDate: baseline.freedomDate,
+    newFreedomDate: plan.freedomDate,
+    totalMonthsSaved: Math.max(
+      0,
+      (baseline.fullyPaid ? baseline.totalMonths : 600) -
+        (plan.fullyPaid ? plan.totalMonths : 600),
+    ),
+    firstDebtPaidDate:
+      firstPaidMonths.length > 0
+        ? addMonths(START, Math.min(...firstPaidMonths))
+        : "-",
+    loanResults: plan.loans.map((l) => {
+      const baselineLoan = baselineMap.get(l.id);
+      const baselineEndDate = baselineLoan?.endDate || "-";
+      const baselineInterest = baselineLoan?.totalInterest || 0;
+
+      return {
+        id: l.id,
+        name: l.name,
+        originalEndDate: baselineEndDate,
+        originalTotalInterest: baselineInterest,
+        newEndDate: l.endDate,
+        newTotalInterest: l.totalInterest,
+        interestSaved: baselineInterest - l.totalInterest,
+        monthsSaved: Math.max(
+          0,
+          (baselineLoan?.finishMonth ?? 600) - (l.finishMonth ?? 600),
+        ),
+        payoffOrder: l.order,
+        isFullyAmortizing: l.fullyPaid,
+      };
+    }),
+  };
+}
+
 export default function Page() {
   const [lang, setLang] = useState<Lang>("sv");
   const [tab, setTab] = useState<Tab>("today");
@@ -449,28 +500,66 @@ export default function Page() {
     [debtLoans, timeBoxes],
   );
   const waterfall = useMemo(
-    () => calcWaterfall(waterfallLoans),
+    () =>
+      simulatePlan({
+        loans: waterfallLoans,
+        strategy: "custom",
+        startDate: START,
+        oneTimePayments: [],
+        rollover: true,
+      }),
     [waterfallLoans],
   );
   const avalancheWaterfall = useMemo(
     () =>
-      calcWaterfall(
-        [...waterfallLoans]
+      simulatePlan({
+        loans: [...waterfallLoans]
           .sort((a, b) => b.interestRate - a.interestRate)
           .map((loan) => ({ ...loan, timeBoxMonths: undefined })),
-      ),
+        strategy: "custom",
+        startDate: START,
+        oneTimePayments: [],
+        rollover: true,
+      }),
     [waterfallLoans],
   );
   const calculate = useCallback(
-    (s: PayoffStrategy) =>
-      debtLoans.length
-        ? calculatePayoffSchedule({
-            loans: withReinvestments(debtLoans),
-            oneTimePayments: [],
-            startDate: START,
-            strategy: s,
-          })
-        : null,
+    (s: PayoffStrategy) => {
+      if (!debtLoans.length) return null;
+
+      // Map debtLoans to PlanLoan format
+      const planLoans = withReinvestments(debtLoans).map((loan) => ({
+        id: loan.id,
+        name: loan.name,
+        balance: loan.balance,
+        interestRate: loan.interestRate,
+        monthlyPayment: loan.currentMonthlyPayment + (loan.extraMonthly || 0),
+        paymentStyle: loan.paymentStyle,
+        extraMonthly: loan.extraMonthly,
+        extraMonthlyEnabled: (loan.extraMonthly || 0) > 0,
+        reinvestment: loan.reinvestment,
+      }));
+
+      // Use canonical motor: plan with strategy (rollover=false for conservative projection)
+      const plan = simulatePlan({
+        loans: planLoans,
+        strategy: s,
+        startDate: START,
+        oneTimePayments: [],
+        rollover: false,
+      });
+
+      // Baseline: same loans, no strategy applied (custom sort, no auto-transfer)
+      const baseline = simulatePlan({
+        loans: planLoans,
+        strategy: "custom",
+        startDate: START,
+        oneTimePayments: [],
+        rollover: false,
+      });
+
+      return planResultToCalculationResult(plan, baseline);
+    },
     [debtLoans, withReinvestments],
   );
   const result = useMemo(() => calculate(strategy), [calculate, strategy]);
