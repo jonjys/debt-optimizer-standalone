@@ -7,6 +7,11 @@ import {
   type WaterfallLoan,
   type WaterfallResult,
 } from "@/lib/debt-optimizer/waterfall";
+import {
+  simulatePlan,
+  type PlanInput,
+  type PlanResult,
+} from "@/lib/debt-optimizer/canonical";
 import type {
   CalculationResult,
   Loan,
