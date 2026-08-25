@@ -38,9 +38,21 @@ const formatRate = (value: number, lang: LoanCardLang) =>
   String(value).replace(".", lang === "sv" ? "," : ".");
 
 const formatBig = (value: Big, lang: LoanCardLang) =>
-  Number(value.toFixed(0)).toLocaleString(
-    lang === "sv" ? "sv-SE" : "en-US",
-  );
+  Number(value.toFixed(0)).toLocaleString(lang === "sv" ? "sv-SE" : "en-US");
+
+/**
+ * Valutan följer språket, precis som i resten av appen: kronor på svenska,
+ * dollar på engelska. Symbolen står före beloppet på engelska och efter på
+ * svenska, så den får aldrig sättas ihop för hand.
+ */
+const money = (value: number | Big, lang: LoanCardLang) =>
+  new Intl.NumberFormat(lang === "sv" ? "sv-SE" : "en-US", {
+    style: "currency",
+    currency: lang === "sv" ? "SEK" : "USD",
+    maximumFractionDigits: 0,
+  }).format(Math.round(Number(value.toString())));
+
+const perMonth = (lang: LoanCardLang) => (lang === "sv" ? "/mån" : "/mo");
 
 function NumberInput({
   label,
@@ -238,7 +250,7 @@ export function LeasingLoanFields({
           value={value.monthlyCost}
           onChange={(next) => set("monthlyCost", next)}
           lang={lang}
-          suffix={sv ? "kr/mån" : "SEK/mo"}
+          suffix={perMonth(lang)}
         />
       </div>
 
@@ -322,7 +334,7 @@ export function LeasingLoanFields({
             {sv ? "Leasing totalt" : "Total lease cost"}
           </span>
           <b className="mt-1 block tabular-nums">
-            {formatBig(calculation.leasingTotal, lang)} kr
+            {money(calculation.leasingTotal, lang)}
           </b>
         </div>
         <div className="rounded-xl bg-white/[.035] p-3">
@@ -330,12 +342,13 @@ export function LeasingLoanFields({
             {sv ? "Köpa och behålla" : "Buy and keep"}
           </span>
           <b className="mt-1 block tabular-nums">
-            {formatBig(calculation.buyNet, lang)} kr
+            {money(calculation.buyNet, lang)}
           </b>
           <span className="mt-0.5 block text-[11px] text-white/45">
-            {formatBig(calculation.buyMonthly, lang)} kr/{sv ? "mån" : "mo"} ·{" "}
+            {money(calculation.buyMonthly, lang)}
+            {perMonth(lang)} ·{" "}
             {sv ? "varav ränta" : "of which interest"}{" "}
-            {formatBig(calculation.buyInterest, lang)} kr
+            {money(calculation.buyInterest, lang)}
           </span>
         </div>
         <div
@@ -343,7 +356,7 @@ export function LeasingLoanFields({
         >
           <span className="text-xs opacity-70">Leasing</span>
           <b className="mt-1 block tabular-nums">
-            {formatBig(calculation.diff.abs(), lang)} kr{" "}
+            {money(calculation.diff.abs(), lang)}{" "}
             {calculation.diff.gt(0)
               ? sv
                 ? "dyrare"
@@ -407,20 +420,20 @@ export function CreditLoanMetrics({
     };
   }, [balance, interestRate, monthlyPayment, paymentStyle]);
 
-  const interestText = formatBig(calculation.interest, lang);
-  const amortizationText = formatBig(calculation.amortization, lang);
+  const interestText = money(calculation.interest, lang);
+  const amortizationText = money(calculation.amortization, lang);
   const shareText = formatBig(calculation.share, lang);
   return (
     <div className="mt-3 space-y-2">
       <div className="rounded-xl border border-white/[.05] bg-black/10 p-3 text-xs leading-5 text-white/50">
         <b className="text-white/75">
-          {sv ? "Ränta denna månad" : "Interest this month"}: {interestText} kr
+          {sv ? "Ränta denna månad" : "Interest this month"}: {interestText}
         </b>{" "}
-        · {sv ? "Amortering" : "Principal"}: {amortizationText} kr
+        · {sv ? "Amortering" : "Principal"}: {amortizationText}
         <br />
         {sv
-          ? `Av dina ${formatNumber(monthlyPayment, lang)} kr går ${interestText} kr till ränta — ${shareText} % av betalningen. Bara ${amortizationText} kr minskar skulden.`
-          : `Of SEK ${formatNumber(monthlyPayment, lang)}, SEK ${interestText} goes to interest — ${shareText}% of the payment. Only SEK ${amortizationText} reduces the debt.`}
+          ? `Av dina ${money(monthlyPayment, lang)} går ${interestText} till ränta — ${shareText} % av betalningen. Bara ${amortizationText} minskar skulden.`
+          : `Of your ${money(monthlyPayment, lang)}, ${interestText} goes to interest — ${shareText}% of the payment. Only ${amortizationText} reduces the debt.`}
         {calculation.paysOff ? (
           <span className="mt-1 block text-blue-300">
             {sv ? "Skuldfri om cirka" : "Debt-free in about"} {calculation.payoffMonths} {sv ? "mån" : "months"}
@@ -430,8 +443,8 @@ export function CreditLoanMetrics({
       {calculation.amortization.lte(0) ? (
         <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
           {sv
-            ? `Månadskostnaden täcker inte räntan. Skulden växer med ${formatBig(calculation.interest.minus(monthlyPayment), lang)} kr/mån. Höj till minst ${formatBig(calculation.interest.plus(100), lang)} kr.`
-            : `The monthly payment does not cover interest. The debt grows by SEK ${formatBig(calculation.interest.minus(monthlyPayment), lang)}/month. Raise it to at least SEK ${formatBig(calculation.interest.plus(100), lang)}.`}
+            ? `Månadskostnaden täcker inte räntan. Skulden växer med ${money(calculation.interest.minus(monthlyPayment), lang)}/mån. Höj till minst ${money(calculation.interest.plus(100), lang)}.`
+            : `The monthly payment does not cover interest. The debt grows by ${money(calculation.interest.minus(monthlyPayment), lang)}/month. Raise it to at least ${money(calculation.interest.plus(100), lang)}.`}
         </div>
       ) : calculation.share.gt(75) ? (
         <div className="rounded-xl border border-orange-500/25 bg-orange-500/10 p-3 text-xs text-orange-200">

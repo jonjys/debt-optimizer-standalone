@@ -336,23 +336,45 @@ const initialLoans: Loan[] = [
 
 const number = (n: number, lang: Lang) =>
   Math.round(n).toLocaleString(lang === "sv" ? "sv-SE" : "en-US");
+/**
+ * Valutan följer språket: svenska kronor, engelska dollar.
+ *
+ * Beloppen räknas inte om — appen räknar på de siffror användaren skriver in,
+ * och växelkursen är inte appens sak att gissa. Symbolen står före beloppet
+ * på engelska och efter på svenska, så varje ställe som visar pengar måste gå
+ * genom money() i stället för att sätta ihop "tal + kr" för hand.
+ */
+const CURRENCY: Record<Lang, { code: string; locale: string; unit: string }> = {
+  sv: { code: "SEK", locale: "sv-SE", unit: "kr" },
+  en: { code: "USD", locale: "en-US", unit: "$" },
+};
+
 const money = (n: number, lang: Lang, compact = false) => {
   const safe = Number.isFinite(n) ? n : 0;
+  const { code, locale } = CURRENCY[lang];
   if (compact) {
     const sign = safe < 0 ? "−" : "";
     const abs = Math.abs(safe);
     const decimal = lang === "sv" ? "," : ".";
     if (abs >= 1_000_000)
-      return `${sign}${(abs / 1_000_000).toFixed(1).replace(".", decimal)} mkr`;
+      return lang === "sv"
+        ? `${sign}${(abs / 1_000_000).toFixed(1).replace(".", decimal)} mkr`
+        : `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
     if (abs >= 10_000)
-      return `${sign}${number(Math.round(abs / 1000), lang)} tkr`;
+      return lang === "sv"
+        ? `${sign}${number(Math.round(abs / 1000), lang)} tkr`
+        : `${sign}$${number(Math.round(abs / 1000), lang)}k`;
   }
-  return new Intl.NumberFormat(lang === "sv" ? "sv-SE" : "en-US", {
+  return new Intl.NumberFormat(locale, {
     style: "currency",
-    currency: "SEK",
+    currency: code,
     maximumFractionDigits: 0,
   }).format(Math.round(safe));
 };
+
+/** Suffixet efter ett belopp. money() har redan med valutan. */
+const perMonth = (lang: Lang) => (lang === "sv" ? "/mån" : "/mo");
+const perYear = (lang: Lang) => (lang === "sv" ? "/år" : "/yr");
 // Ett ogiltigt datum får aldrig ta ner hela sidan. Intl.DateTimeFormat kastar
 // RangeError på Invalid Date, och eftersom skuldfri-datumet renderas i varje
 // vy räckte ett enda NaN för att ge vit skärm i stället för en tom siffra.
@@ -1125,7 +1147,8 @@ function ResultSidebar({
                 <div className="ml-9 mt-2 flex items-center gap-1 text-[12px] text-blue-300">
                   <ArrowRight size={11} className="shrink-0" />
                   <span className="truncate">
-                    {number(freed, lang)} kr/{sv ? "mån" : "mo"} → {receiver.name}
+                    {money(freed, lang)}
+                    {perMonth(lang)} → {receiver.name}
                   </span>
                 </div>
               );
@@ -1209,18 +1232,20 @@ function Landing({
         {/* Ett riktigt räkneexempel i stället för en beskrivning av ett. */}
         <div className="card mt-9 w-full max-w-[420px] p-5 text-left">
           <div className="text-[11px] uppercase tracking-[.14em] text-white/40">
-            {sv ? "Exempel · blancolån 180 000 kr" : "Example · SEK 180,000 loan"}
+            {sv
+              ? `Exempel · blancolån ${money(180_000, lang)}`
+              : `Example · ${money(180_000, lang)} loan`}
           </div>
           <div className="mt-4 space-y-3">
             <DemoRow
-              label={sv ? "3 900 kr/mån" : "SEK 3,900/mo"}
+              label={`${money(3_900, lang)}${perMonth(lang)}`}
               date={month(demo.plain.endDate, lang)}
               note={`${sv ? "ränta" : "interest"} ${money(demo.plain.totalInterest, lang)}`}
               width={100}
               tone="plain"
             />
             <DemoRow
-              label={sv ? "+ 1 500 kr extra" : "+ SEK 1,500 extra"}
+              label={`+ ${money(1_500, lang)} ${sv ? "extra" : "extra"}`}
               date={month(demo.boosted.endDate, lang)}
               note={`${sv ? "ränta" : "interest"} ${money(demo.boosted.totalInterest, lang)}`}
               width={Math.round(
@@ -1980,7 +2005,8 @@ function Bar({
       <div className="flex justify-between gap-3">
         <span>{label}</span>
         <span className="tabular-nums">
-          {number(value, lang)} {lang === "sv" ? "kr/år" : "kr/yr"}
+          {money(value, lang)}
+          {perYear(lang)}
         </span>
       </div>
       <div className="mt-1 h-2 rounded-full bg-white/5">
@@ -2489,15 +2515,13 @@ function TodayV5({
                                     <>
                                       {sv ? "Månadskostnad nu " : "Monthly cost now "}
                                       <b className="text-white/70">
-                                        {number(
+                                        {money(
                                           principalOf(loan) + monthInterestOf(loan),
                                           lang,
-                                        )}{" "}
-                                        kr
+                                        )}
                                       </b>{" "}
-                                      ({number(principalOf(loan), lang)}
-                                      {sv ? " + " : " + "}
-                                      {number(monthInterestOf(loan), lang)}
+                                      ({money(principalOf(loan), lang)} +{" "}
+                                      {money(monthInterestOf(loan), lang)}
                                       {sv ? " ränta" : " interest"})
                                     </>
                                   }
@@ -2516,7 +2540,7 @@ function TodayV5({
                                   hint={
                                     <>
                                       {sv ? "varav ränta nu " : "of which interest "}
-                                      {number(monthInterestOf(loan), lang)} kr
+                                      {money(monthInterestOf(loan), lang)}
                                     </>
                                   }
                                 />
@@ -2794,7 +2818,7 @@ function PaymentBoost({
       <BoostRow
         checked={targetOn}
         label={sv ? "Fyll upp till" : "Top up to"}
-        unit={sv ? "kr/mån" : "SEK/mo"}
+        unit={perMonth(lang)}
         value={target || Math.ceil((regular + 200) / 100) * 100}
         onToggle={(on) =>
           onChange({
@@ -2809,7 +2833,7 @@ function PaymentBoost({
       <BoostRow
         checked={extraOn}
         label={sv ? "Betala extra" : "Pay extra"}
-        unit={sv ? "kr/mån" : "SEK/mo"}
+        unit={perMonth(lang)}
         value={extra}
         onToggle={(on) =>
           onChange({ extraMonthlyEnabled: on, extraMonthlyFrom: START })
@@ -2846,7 +2870,7 @@ function PaymentBoost({
             </>
           ) : null}
           <span className="text-white/30">=</span>
-          <b className="tabular-nums">{number(payingNow, lang)} kr</b>
+          <b className="tabular-nums">{money(payingNow, lang)}</b>
         </div>
         {loan.paymentStyle === "fixed_amort" ? (
           <p className="mt-2 text-[11px] leading-4 text-white/45">
@@ -2906,8 +2930,8 @@ function PaymentBoost({
               >
                 💡{" "}
                 {sv
-                  ? `500 kr mer i månaden: klart ${duration(bumpMonths, lang)} tidigare och ${money(bumpInterest, lang)} mindre i ränta.`
-                  : `SEK 500 more per month: ${duration(bumpMonths, lang)} earlier and ${money(bumpInterest, lang)} less interest.`}
+                  ? `${money(500, lang)} mer i månaden: klart ${duration(bumpMonths, lang)} tidigare och ${money(bumpInterest, lang)} mindre i ränta.`
+                  : `${money(500, lang)} more per month: ${duration(bumpMonths, lang)} earlier and ${money(bumpInterest, lang)} less interest.`}
                 <span className="mt-0.5 block text-blue-300">
                   {sv ? "Lägg till →" : "Add it →"}
                 </span>
@@ -3245,7 +3269,15 @@ function RefinanceV5({
           {bake.warningText && (
             <div className="mt-4 flex items-start gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
               <ShieldAlert size={18} className="mt-0.5 shrink-0" />
-              <span>{bake.warningText}</span>
+              <span>
+                {bake.warning === "over85"
+                  ? sv
+                    ? "Banken kräver ofta extra amortering eller nekar belåning över 85 %"
+                    : "Banks often require extra amortisation or decline above 85% LTV"
+                  : sv
+                    ? "Belåningsgraden korsar 70 % — amorteringskravet hoppar till 2 %/år på hela bolånet"
+                    : "LTV crosses 70% — the amortisation requirement jumps to 2%/year on the whole mortgage"}
+              </span>
             </div>
           )}
         </div>

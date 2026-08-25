@@ -108,6 +108,8 @@ export interface BakeInResult {
   interestSavedGross: number;
   interestSavedNet: number;
   warningLtv: boolean;
+  /** Nyckel för varningen, så att vyn kan skriva den på användarens språk. */
+  warning: "over85" | "crosses70" | null;
   warningText: string | null;
   summaryLine: string;
 
@@ -305,12 +307,21 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
   const interestSavedNet = netBefore - netAfter;
 
   const warningLtv = ltvAfter > 0.85;
-  let warningText: string | null = null;
-  if (ltvAfter > 0.85) {
-    warningText = "Banken kräver ofta extra amortering eller nekar belåning över 85%";
-  } else if (ltvAfter > 0.7 && ltvBefore <= 0.7) {
-    warningText = "LTV korsar 70% — amorteringskravet hoppar till 2%/år på hela bolånet";
-  }
+  // Texten byggs i vyn: den här filen vet ingenting om vilket språk
+  // användaren läser på, och en svensk mening mitt i den engelska vyn är
+  // lika fel som en felaktig siffra.
+  const warning: BakeInResult["warning"] =
+    ltvAfter > 0.85
+      ? "over85"
+      : ltvAfter > 0.7 && ltvBefore <= 0.7
+        ? "crosses70"
+        : null;
+  const warningText =
+    warning === "over85"
+      ? "Banken kräver ofta extra amortering eller nekar belåning över 85%"
+      : warning === "crosses70"
+        ? "LTV korsar 70% — amorteringskravet hoppar till 2%/år på hela bolånet"
+        : null;
 
   const fmt = (n: number) => Math.round(n).toLocaleString("sv-SE");
   // En förlust MÅSTE skrivas ut som en förlust. Tidigare föll allt som inte
@@ -427,6 +438,7 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
     interestSavedGross,
     interestSavedNet,
     warningLtv,
+    warning,
     warningText,
     summaryLine,
     todayMonthly: monthBefore,
