@@ -221,7 +221,7 @@ const COPY = {
       "See the trade-off between lower interest and a higher loan-to-value ratio.",
     property: "Property value",
     mortgage: "Current mortgage",
-    personal: "Personal loans total",
+    personal: "Personal loans",
     baked: "Amount to bake in",
     newLtv: "New LTV",
     newMonthly: "New monthly payment",
@@ -1415,46 +1415,83 @@ function BestView({
             </h2>
             <p className="mt-1 text-xs text-white/65">
               {sv
-                ? "Dra f\u00f6r att \u00e4ndra. \u00d6versta l\u00e5net f\u00e5r alla frigjorda pengar f\u00f6rst."
-                : "Drag to reorder. The top debt receives every freed payment first."}
+                ? "Översta lånet får alla frigjorda pengar först."
+                : "The top debt receives every freed payment first."}
             </p>
-            <div className="mt-4 space-y-2">
+            <ol className="mt-4 space-y-2">
               {loans.map((loan, i) => (
-                <div
+                <li
                   key={loan.id}
-                  draggable
-                  onDragStart={(e) =>
-                    e.dataTransfer.setData("text/plain", String(i))
-                  }
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    const from = Number(e.dataTransfer.getData("text/plain"));
-                    if (!Number.isInteger(from) || from === i) return;
-                    setLoans((current) => {
-                      const next = [...current];
-                      const [item] = next.splice(from, 1);
-                      if (!item) return current;
-                      next.splice(i, 0, item);
-                      return next;
-                    });
-                  }}
-                  className="flex cursor-grab items-center gap-3 rounded-xl border border-white/[.06] bg-black/15 p-3 text-sm active:cursor-grabbing"
+                  className="flex items-center gap-2 rounded-xl border border-white/[.06] bg-black/15 p-2 pl-3 text-sm"
                 >
-                  <span className="text-white/35">{"\u283f"}</span>
                   <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/5 text-xs">
                     {i + 1}
                   </span>
-                  <span className="flex-1 truncate">{loan.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{loan.name}</span>
                   <span className="shrink-0 text-xs text-white/55">
-                    {(loan.interestRate * 100).toFixed(1).replace(".", sv ? "," : ".")} %
+                    {(loan.interestRate * 100)
+                      .toFixed(1)
+                      .replace(".", sv ? "," : ".")}{" "}
+                    %
                   </span>
-                </div>
+                  {/* Knappar i stället för dra-och-släpp: den här listan
+                      använde HTML5-drag, som inte fungerar med touch alls.
+                      På telefon gick ordningen alltså inte att ändra. */}
+                  <span className="flex shrink-0 gap-1">
+                    <MoveButton
+                      disabled={i === 0}
+                      label={sv ? `Flytta ${loan.name} uppåt` : `Move ${loan.name} up`}
+                      onClick={() => setLoans((c) => swap(c, i, i - 1))}
+                    >
+                      ↑
+                    </MoveButton>
+                    <MoveButton
+                      disabled={i === loans.length - 1}
+                      label={sv ? `Flytta ${loan.name} nedåt` : `Move ${loan.name} down`}
+                      onClick={() => setLoans((c) => swap(c, i, i + 1))}
+                    >
+                      ↓
+                    </MoveButton>
+                  </span>
+                </li>
               ))}
-            </div>
+            </ol>
           </div>
         </>
       )}
     </main>
+  );
+}
+
+/** Byter plats på två lån i listan. */
+function swap(loans: Loan[], from: number, to: number) {
+  if (to < 0 || to >= loans.length) return loans;
+  const next = [...loans];
+  [next[from], next[to]] = [next[to], next[from]];
+  return next;
+}
+
+function MoveButton({
+  disabled,
+  label,
+  onClick,
+  children,
+}: {
+  disabled: boolean;
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="grid h-9 w-9 place-items-center rounded-lg border border-white/[.08] bg-white/[.04] text-sm transition hover:bg-white/[.1] disabled:opacity-25 disabled:hover:bg-white/[.04]"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -1502,7 +1539,7 @@ function RouteCard({
           <dd className="font-medium">{money(result.totalInterest, lang)}</dd>
         </div>
       </dl>
-      <p className="mt-3 min-h-[1.125rem] text-xs text-orange-300">
+      <p className="mt-3 text-xs text-orange-300 md:min-h-[1.125rem]">
         {result.fullyPaid && extraInterest > 0
           ? `+${money(extraInterest, lang)} ${sv ? "mer i ränta än billigaste" : "more interest than the cheapest"}`
           : ""}
@@ -2635,7 +2672,7 @@ function RefinanceV5({
               />
             </div>
             <p className="mt-3 text-xs text-white/55">
-              {bandLabel(bake.bandAfter)}
+              {bandLabel(bake.bandAfter, lang)}
               {bake.amortKrDelta > 1
                 ? ` \u00b7 ${sv ? "amortering" : "amortisation"} +${money(bake.amortKrDelta, lang)}/${sv ? "m\u00e5n" : "mo"}`
                 : ""}

@@ -21,17 +21,26 @@ export function ltvBand(ltv: number): LtvBand {
   return "none";
 }
 
-export function bandLabel(band: LtvBand): string {
-  switch (band) {
-    case "over85":
-      return "Över 85% — bank nekar ofta / extra krav";
-    case "two":
-      return "2% amorteringskrav gäller";
-    case "one":
-      return "1% amorteringskrav gäller";
-    default:
-      return "Inget lagkrav på amortering";
-  }
+export function bandLabel(band: LtvBand, lang: "sv" | "en" = "sv"): string {
+  const text: Record<LtvBand, { sv: string; en: string }> = {
+    over85: {
+      sv: "Över 85 % — banken nekar ofta eller ställer extra krav",
+      en: "Above 85% — banks often decline or add requirements",
+    },
+    two: {
+      sv: "2 % amorteringskrav gäller",
+      en: "2% minimum amortisation applies",
+    },
+    one: {
+      sv: "1 % amorteringskrav gäller",
+      en: "1% minimum amortisation applies",
+    },
+    none: {
+      sv: "Inget lagkrav på amortering",
+      en: "No minimum amortisation required",
+    },
+  };
+  return text[band][lang];
 }
 
 export interface BakeInInput {
