@@ -180,6 +180,18 @@ const DEFAULT_LEASING_TERMS: LeasingTerms = {
 };
 
 const START = "2026-08";
+const PLAN_STORAGE_KEY = "debtkill-plan";
+
+/** Det som sparas mellan besöken. Allt ligger lokalt i webbläsaren. */
+interface StoredPlan {
+  loans: Loan[];
+  loanKinds: Record<string, LoanKind>;
+  amortKinds: Record<string, AmortKind>;
+  leasingTerms: Record<string, LeasingTerms>;
+  timeBoxes: Record<string, TimeBox>;
+  propertyValue: number;
+  bakeAmount: number;
+}
 const COPY = {
   en: {
     tabs: { today: "Today", compare: "Compare", refinance: "Refinance" },
@@ -439,17 +451,77 @@ export default function Page() {
   const appRef = useRef<HTMLDivElement>(null);
   const t = COPY[lang];
 
+  /**
+   * Planen ligger kvar i webbläsaren mellan besöken.
+   *
+   * Att skriva in fem lån tar några minuter, och tidigare räckte en
+   * omladdning för att allt skulle vara borta. Datan stannar i localStorage
+   * på den här enheten — den lämnar aldrig webbläsaren, så löftet om att
+   * ingenting skickas någonstans står kvar.
+   */
+  const [restored, setRestored] = useState(false);
   useEffect(() => {
     const saved = localStorage.getItem("debtkill-lang");
-    if (saved === "en" || saved === "sv") {
-      setLang(saved);
-      return;
-    }
+    if (saved === "en" || saved === "sv") setLang(saved);
     // Ingen sparad preferens: svenska är default (CSN, blancolån och
     // Elgiganten-avbetalning är svenska begrepp), men en besökare med ett
     // icke-svenskt språk i webbläsaren får engelska.
-    if (!navigator.language?.toLowerCase().startsWith("sv")) setLang("en");
+    else if (!navigator.language?.toLowerCase().startsWith("sv")) setLang("en");
+
+    try {
+      const raw = localStorage.getItem(PLAN_STORAGE_KEY);
+      const stored = raw ? (JSON.parse(raw) as StoredPlan) : null;
+      if (stored?.loans?.length) {
+        setLoans(stored.loans);
+        setLoanKinds(stored.loanKinds ?? {});
+        setAmortKinds(stored.amortKinds ?? {});
+        setLeasingTerms(stored.leasingTerms ?? {});
+        setTimeBoxes(stored.timeBoxes ?? {});
+        if (typeof stored.propertyValue === "number")
+          setPropertyValue(stored.propertyValue);
+        if (typeof stored.bakeAmount === "number")
+          setBakeAmount(stored.bakeAmount);
+        setStarted(true);
+      }
+    } catch {
+      // Skadad eller blockerad lagring ska inte hindra någon från att
+      // använda appen — den startar då bara tom.
+    }
+    setRestored(true);
   }, []);
+
+  useEffect(() => {
+    // Skriv först när vi läst klart, annars skriver första rendern över
+    // det som ligger sparat med ett tomt läge.
+    if (!restored) return;
+    try {
+      if (!loans.length) {
+        localStorage.removeItem(PLAN_STORAGE_KEY);
+        return;
+      }
+      const plan: StoredPlan = {
+        loans,
+        loanKinds,
+        amortKinds,
+        leasingTerms,
+        timeBoxes,
+        propertyValue,
+        bakeAmount,
+      };
+      localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(plan));
+    } catch {
+      // Full eller avstängd lagring: planen finns kvar i sessionen ändå.
+    }
+  }, [
+    restored,
+    loans,
+    loanKinds,
+    amortKinds,
+    leasingTerms,
+    timeBoxes,
+    propertyValue,
+    bakeAmount,
+  ]);
   useEffect(() => {
     setLoans((current) =>
       current.map((loan) => {
@@ -689,12 +761,37 @@ export default function Page() {
       )}
       {loans.length > 0 && (
         <div ref={appRef} className="scroll-mt-20">
-          <button
-            onClick={() => setStarted(false)}
-            className="ml-5 mt-5 text-xs text-white/65 hover:text-white md:ml-10"
-          >
-            ← {lang === "sv" ? "Tillbaka" : "Back"}
-          </button>
+          <div className="flex items-center justify-between gap-3 px-4 pt-4 md:px-8">
+            <button
+              onClick={() => setStarted(false)}
+              className="text-xs text-white/65 transition hover:text-white"
+            >
+              ← {lang === "sv" ? "Tillbaka" : "Back"}
+            </button>
+            {/* Planen ligger kvar mellan besöken, så det måste gå att bli av
+                med den — annars sitter man fast i gamla siffror. */}
+            <button
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    lang === "sv"
+                      ? "Ta bort alla lån och börja om?"
+                      : "Remove all debts and start over?",
+                  )
+                )
+                  return;
+                setLoans([]);
+                setLoanKinds({});
+                setAmortKinds({});
+                setLeasingTerms({});
+                setTimeBoxes({});
+                setStarted(false);
+              }}
+              className="text-xs text-white/45 transition hover:text-red-300"
+            >
+              {lang === "sv" ? "Börja om" : "Start over"}
+            </button>
+          </div>
           {tab === "today" && (
             <TodayV5
               lang={lang}
@@ -766,15 +863,19 @@ export default function Page() {
           {toast}
         </div>
       )}
-      <footer className="mx-auto max-w-[1280px] px-5 pb-28 pt-8 text-center text-[12px] text-white/55 md:pb-8">
+      <footer className="mx-auto max-w-[680px] px-5 pb-28 pt-10 text-center text-[12px] leading-5 text-white/50 md:pb-10">
         <p>
           {lang === "sv"
-            ? "All matematik körs i din webbläsare. Ingen spårning. Ingen kostnad. Byggd med Big.js. 🇸🇪"
-            : "All math runs in your browser. No tracking. No cost. Built with Big.js. 🇸🇪"}
+            ? "All matematik körs i din webbläsare. Ingen spårning, ingen kostnad, inget konto. Dina lån sparas bara på den här enheten."
+            : "All math runs in your browser. No tracking, no cost, no account. Your debts are stored only on this device."}
         </p>
-        <span className="mt-3 inline-flex rounded-full border border-white/[.06] px-3 py-1.5 text-white/65">
-          Coming soon on Product Hunt
-        </span>
+        {/* Appen räknar på amorteringskrav och ränteavdrag — regler som ändras
+            mellan åren. Siffrorna är en uppskattning, inte ett besked. */}
+        <p className="mt-3 text-white/35">
+          {lang === "sv"
+            ? "Siffrorna är uppskattningar baserade på det du fyller i, inte finansiell rådgivning. Amorteringskrav och ränteavdrag ändras — stäm av med din bank och Skatteverket innan du bestämmer dig."
+            : "The figures are estimates based on what you enter, not financial advice. Amortisation rules and interest deductions change — check with your bank before deciding."}
+        </p>
       </footer>
     </div>
   );
