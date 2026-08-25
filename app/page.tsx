@@ -180,7 +180,7 @@ const DEFAULT_LEASING_TERMS: LeasingTerms = {
 };
 
 const START = "2026-08";
-const PLAN_STORAGE_KEY = "debtkill-plan";
+const PLAN_STORAGE_KEY = "debtoptimize-plan";
 
 /** Det som sparas mellan besöken. Allt ligger lokalt i webbläsaren. */
 interface StoredPlan {
@@ -461,7 +461,7 @@ export default function Page() {
    */
   const [restored, setRestored] = useState(false);
   useEffect(() => {
-    const saved = localStorage.getItem("debtkill-lang");
+    const saved = localStorage.getItem("debtoptimize-lang");
     if (saved === "en" || saved === "sv") setLang(saved);
     // Ingen sparad preferens: svenska är default (CSN, blancolån och
     // Elgiganten-avbetalning är svenska begrepp), men en besökare med ett
@@ -664,7 +664,7 @@ export default function Page() {
 
   const setLanguage = (next: Lang) => {
     setLang(next);
-    localStorage.setItem("debtkill-lang", next);
+    localStorage.setItem("debtoptimize-lang", next);
   };
   const updateLoan = <K extends keyof Loan>(id: string, key: K, value: Loan[K]) =>
     setLoans((current) =>
@@ -900,7 +900,7 @@ function Header({
           <span className="grid h-8 w-8 place-items-center rounded-[10px] bg-gradient-to-br from-blue-400 to-blue-700 shadow-[0_0_20px_rgba(59,130,246,.3)]">
             <TrendingDown size={18} />
           </span>
-          <b>DebtKill</b>
+          <b>DebtOptimize</b>
         </div>
         <nav className="absolute left-1/2 hidden -translate-x-1/2 rounded-full border border-white/[.06] bg-white/[.025] p-1 md:flex">
           {(Object.keys(t.tabs) as Tab[]).map((key) => (

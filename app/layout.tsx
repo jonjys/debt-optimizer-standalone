@@ -5,30 +5,46 @@ import type { Metadata, Viewport } from "next";
 // beror på deras lån, räntor och vad de faktiskt betalar — appen räknar ut
 // det, den lovar det inte i förväg.
 export const metadata: Metadata = {
-  metadataBase: new URL("https://debt-optimizer-standalone.vercel.app"),
-  title: "DebtKill — se ditt skuldfria datum | Skuldkalkylator",
+  // Måste peka på den domän sidan faktiskt ligger på, annars byggs
+  // og:image-URL:en mot fel värd och delningen visar ingen bild.
+  metadataBase: new URL("https://debtoptimize.se"),
+  title: "DebtOptimize — se ditt skuldfria datum | Skuldkalkylator",
   description:
     "Räkna på bolån, blancolån, kreditkort, billån, CSN, leasing och avbetalning. Se ditt skuldfria datum och vad räntan kostar. Allt i din webbläsare.",
+  applicationName: "DebtOptimize",
+  keywords: [
+    "skuldkalkylator",
+    "amortera",
+    "bolån",
+    "blancolån",
+    "ränteavdrag",
+    "amorteringskrav",
+    "skuldfri",
+  ],
   openGraph: {
-    title: "DebtKill — se ditt skuldfria datum",
+    title: "DebtOptimize — se ditt skuldfria datum",
     description:
       "Gratis och privat skuldkalkylator för alla typer av lån. Allt räknas i din webbläsare.",
     type: "website",
     locale: "sv_SE",
-    siteName: "DebtKill",
+    siteName: "DebtOptimize",
+    url: "https://debtoptimize.se",
     images: [
       {
-        url: "/og-debtkill.svg",
+        // PNG, inte SVG: Facebook, LinkedIn, X och iMessage renderar inte
+        // SVG som delningsbild — då syns ingen bild alls.
+        url: "/og-debtoptimize.png",
         width: 1200,
         height: 630,
-        alt: "DebtKill — skuldkalkylator",
+        alt: "DebtOptimize — se exakt när dina skulder är borta",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "DebtKill",
+    title: "DebtOptimize",
     description: "Se ditt skuldfria datum. Gratis, privat, i webbläsaren.",
+    images: ["/og-debtoptimize.png"],
   },
 };
 
