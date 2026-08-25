@@ -52,7 +52,14 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 type Lang = "en" | "sv";
 type Tab = "today" | "compare" | "refinance";
@@ -203,7 +210,7 @@ const COPY = {
     plan: "Your plan",
     hint: "Tune the numbers. We’ll handle the math.",
     add: "Add debt",
-    balance: "Balance",
+    balance: "Debt",
     rate: "Interest",
     payment: "Monthly payment",
     extra: "Extra monthly",
@@ -246,7 +253,7 @@ const COPY = {
     plan: "Din plan",
     hint: "Justera siffrorna. Vi sköter matematiken.",
     add: "Lägg till lån",
-    balance: "Saldo",
+    balance: "Skuld",
     rate: "Ränta",
     payment: "Månadsbetalning",
     extra: "Extra per månad",
@@ -361,6 +368,20 @@ const month = (ym: string | undefined | null, lang: Lang) => {
   }).format(date);
 };
 
+/** Räntan på skulden den här månaden. */
+const monthInterestOf = (loan: Loan) =>
+  Math.max(0, (loan.balance * loan.interestRate) / 12);
+
+/**
+ * Amorteringsdelen vid rak amortering. Har användaren angett den används den
+ * rakt av; annars härleds den ur månadskostnaden minus räntan, vilket är hur
+ * äldre planer är sparade.
+ */
+const principalOf = (loan: Loan) =>
+  typeof loan.monthlyPrincipal === "number" && loan.monthlyPrincipal > 0
+    ? loan.monthlyPrincipal
+    : Math.max(0, loan.currentMonthlyPayment - monthInterestOf(loan));
+
 /**
  * Vad som faktiskt frigörs varje månad när lånet är slut. Speglar `clear()` i
  * canonical.ts: vid rak amortering försvinner räntedelen på vägen, så det som
@@ -368,10 +389,11 @@ const month = (ym: string | undefined | null, lang: Lang) => {
  */
 function freedMonthly(loan: Loan) {
   const extra = loan.extraMonthlyEnabled === false ? 0 : loan.extraMonthly || 0;
-  if (loan.paymentStyle !== "fixed_amort")
-    return loan.currentMonthlyPayment + extra;
-  const interest = (loan.balance * loan.interestRate) / 12;
-  return Math.max(0, loan.currentMonthlyPayment - interest) + extra;
+  return (
+    (loan.paymentStyle === "fixed_amort"
+      ? principalOf(loan)
+      : loan.currentMonthlyPayment) + extra
+  );
 }
 
 /** Hur lånet faktiskt betalas av, i klartext. */
@@ -440,7 +462,6 @@ export default function Page() {
     personal: true,
   });
   const [fearRate, setFearRate] = useState(0.1);
-  const [income, setIncome] = useState(0);
   const [leasingTerms, setLeasingTerms] = useState<
     Record<string, LeasingTerms>
   >({});
@@ -533,9 +554,16 @@ export default function Page() {
     );
   }, [lang]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Varje tangenttryck i ett fält körde tidigare fem fullständiga
+   * 600-månaderssimuleringar med Big.js innan bokstaven syntes. På telefon
+   * blev inmatningen märkbart trög. Fälten uppdateras nu direkt och
+   * uträkningarna hinner ikapp strax efter.
+   */
+  const settledLoans = useDeferredValue(loans);
   const debtLoans = useMemo(
-    () => loans.filter((loan) => loanKinds[loan.id] !== "leasing"),
-    [loanKinds, loans],
+    () => settledLoans.filter((loan) => loanKinds[loan.id] !== "leasing"),
+    [loanKinds, settledLoans],
   );
   /**
    * Ett enda underlag för alla vyer. Tidigare byggde "Mina lån" sin plan med
@@ -553,7 +581,10 @@ export default function Page() {
         // Grundbetalning och eget påslag hålls isär: motorn lägger på det
         // extra själv. Summeras de här räknas påslaget två gånger.
         monthlyPayment: loan.currentMonthlyPayment,
+        monthlyPrincipal: loan.monthlyPrincipal,
         paymentStyle: loan.paymentStyle,
+        targetMonthlyTotal: loan.targetMonthlyTotal,
+        targetMonthlyEnabled: loan.targetMonthlyEnabled,
         extraMonthly: loan.extraMonthly,
         extraMonthlyEnabled: loan.extraMonthlyEnabled,
         timeBoxMonths: timeBoxes[loan.id]?.enabled
@@ -747,8 +778,8 @@ export default function Page() {
     setStarted(true);
     setToast(
       lang === "sv"
-        ? "Exempellån inlästa · Återinvestering aktiv"
-        : "Sample debts loaded · Reinvest demo active",
+        ? "Exempellån inlästa — ändra siffrorna till dina egna"
+        : "Sample debts loaded — change the numbers to your own",
     );
     window.setTimeout(() => setToast(null), 3200);
     scrollToApp();
@@ -809,8 +840,6 @@ export default function Page() {
               setExpanded={setExpanded}
               fearRate={fearRate}
               setFearRate={setFearRate}
-              income={income}
-              setIncome={setIncome}
               leasingTerms={leasingTerms}
               setLeasingTerms={setLeasingTerms}
               timeBoxes={timeBoxes}
@@ -1201,23 +1230,35 @@ function Title({
     </div>
   );
 }
+/**
+ * Talfält.
+ *
+ * Värdet visas formaterat ("112 000") men formaterades tidigare om vid varje
+ * tangenttryck. Det gjorde två saker: markören hoppade till slutet mitt i
+ * inmatningen, och en nolla gick inte att skriva över utan att först markera
+ * den. Medan fältet har fokus visas nu exakt det användaren skrivit, och
+ * formateringen läggs tillbaka först när fältet lämnas.
+ */
 function Field({
   label,
   value,
   onChange,
   suffix,
-  decimal,
   readOnly,
+  hint,
+  max = 10_000_000,
 }: {
   label: string;
   value: string;
   onChange: (n: number) => void;
   suffix?: string;
-  decimal?: boolean;
   readOnly?: boolean;
+  hint?: React.ReactNode;
+  max?: number;
 }) {
+  const [draft, setDraft] = useState<string | null>(null);
   return (
-    <label className="block rounded-xl border border-white/[.06] bg-black/15 px-3 py-2 transition focus-within:border-blue-400/30">
+    <label className="block rounded-xl border border-white/[.06] bg-black/15 px-3 py-2 transition focus-within:border-blue-400/40">
       <small className="block truncate text-[10px] uppercase tracking-[.12em] text-white/50">
         {label}
       </small>
@@ -1226,19 +1267,24 @@ function Field({
           spellCheck={false}
           readOnly={readOnly}
           inputMode="decimal"
-          value={value}
-          onChange={(e) => {
+          enterKeyHint="done"
+          value={draft ?? value}
+          onFocus={(event) => {
+            setDraft(value);
+            // Markera allt så att den första siffran ersätter det som står
+            // i stället för att hamna bredvid.
+            event.currentTarget.select();
+          }}
+          onBlur={() => setDraft(null)}
+          onChange={(event) => {
+            const raw = event.target.value;
+            setDraft(raw);
             const parsed = Number(
-              e.target.value
-                .replace(/\s/g, "")
-                .replace(",", ".")
-                .replace(/[^0-9.-]/g, ""),
+              raw.replace(/\s/g, "").replace(",", ".").replace(/[^0-9.]/g, ""),
             );
-            onChange(
-              Number.isFinite(parsed)
-                ? Math.min(10_000_000, Math.max(0, parsed))
-                : 0,
-            );
+            if (Number.isFinite(parsed))
+              onChange(Math.min(max, Math.max(0, parsed)));
+            else if (raw.trim() === "") onChange(0);
           }}
           className="w-full min-w-0 bg-transparent py-0.5 text-[17px] tabular-nums outline-none read-only:text-white/65"
         />
@@ -1246,9 +1292,15 @@ function Field({
           <span className="shrink-0 text-xs text-white/50">{suffix}</span>
         ) : null}
       </span>
+      {hint ? (
+        <span className="mt-0.5 block text-[11px] leading-4 text-white/45">
+          {hint}
+        </span>
+      ) : null}
     </label>
   );
 }
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-white/[.06] bg-black/15 px-3 py-2.5">
@@ -1286,17 +1338,25 @@ function MobileBar({
   };
   return (
     <div className="fixed inset-x-0 bottom-0 z-50 border-t border-white/10 bg-[#0B0B11]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden">
+      {/* Ändrar man en siffra långt ner i ett lånekort ska man se vad det gör
+          utan att scrolla tillbaka upp. Raden följer planen hela tiden. */}
       {hasDebts && (
-        <div className="flex items-center justify-between gap-3 border-b border-white/[.06] px-4 py-2 text-[11px]">
-          <span className="text-white/55">
-            {t.free}{" "}
-            <b className="text-white">
+        <div className="flex items-baseline justify-between gap-3 border-b border-white/[.06] px-4 py-2">
+          <span className="min-w-0">
+            <span className="block text-[10px] uppercase tracking-[.12em] text-white/45">
+              {t.free}
+            </span>
+            <b className="block truncate text-[15px] leading-tight">
               {plan.fullyPaid ? month(plan.freedomDate, lang) : "—"}
             </b>
           </span>
-          <span className="text-white/55">
-            {lang === "sv" ? "Ränta" : "Interest"}{" "}
-            <b className="text-white">{money(plan.totalInterest, lang, true)}</b>
+          <span className="shrink-0 text-right">
+            <span className="block text-[10px] uppercase tracking-[.12em] text-white/45">
+              {lang === "sv" ? "Total ränta" : "Total interest"}
+            </span>
+            <b className="block text-[15px] leading-tight tabular-nums">
+              {money(plan.totalInterest, lang, true)}
+            </b>
           </span>
         </div>
       )}
@@ -1659,7 +1719,6 @@ function FamilyLoanFields({
           }
           value={(rate * 100).toFixed(1).replace(".", sv ? "," : ".")}
           suffix="%"
-          decimal
           onChange={(v) => setRate(Math.min(0.1, Math.max(0, v / 100)))}
         />
         <label className="flex items-center gap-2 text-xs text-white/60">
@@ -1728,12 +1787,8 @@ function SavingsVsPayoff({
   }, [cash, saveRate, debtRate, deduction]);
   useEffect(() => setDebtRate(loanRate), [loanRate]);
   return (
-    <div className="card rounded-xl p-4">
-      <b>{sv ? "Ska jag amortera eller spara?" : "Save or pay off?"} 🤔</b>
-      <p className="mt-1 text-[11px] text-white/45">
-        {sv ? "Jämför mot" : "Compared against"} {loanName}
-      </p>
-      <div className="mt-3 grid grid-cols-2 gap-2">
+    <div>
+      <div className="grid grid-cols-2 gap-2">
         <Field
           label={sv ? "Sparpengar" : "Savings"}
           value={number(cash, lang)}
@@ -1745,7 +1800,6 @@ function SavingsVsPayoff({
             .toFixed(1)
             .replace(".", sv ? "," : ".")}
           suffix=" %"
-          decimal
           onChange={(v) => setSaveRate(v / 100)}
         />
         <Field
@@ -1754,7 +1808,6 @@ function SavingsVsPayoff({
             .toFixed(1)
             .replace(".", sv ? "," : ".")}
           suffix=" %"
-          decimal
           onChange={(v) => setDebtRate(v / 100)}
         />
         <label className="flex items-center gap-2 rounded-2xl border border-white/[.06] bg-black/10 p-3 text-[12px] text-white/65">
@@ -1864,8 +1917,6 @@ interface TodayProps {
   setExpanded: (fn: (c: Record<string, boolean>) => Record<string, boolean>) => void;
   fearRate: number;
   setFearRate: (n: number) => void;
-  income: number;
-  setIncome: (n: number) => void;
   leasingTerms: Record<string, LeasingTerms>;
   setLeasingTerms: (
     fn: (c: Record<string, LeasingTerms>) => Record<string, LeasingTerms>,
@@ -1892,8 +1943,6 @@ function TodayV5({
   setExpanded,
   fearRate,
   setFearRate,
-  income,
-  setIncome,
   leasingTerms,
   setLeasingTerms,
   timeBoxes,
@@ -2001,10 +2050,20 @@ function TodayV5({
   };
   const changeAmort = (loan: Loan, a: AmortKind) => {
     setAmortKinds((x) => ({ ...x, [loan.id]: a }));
-    updateLoan(
-      loan.id,
-      "paymentStyle",
-      a === "fixed_amort" ? "fixed_amort" : "annuity",
+    setLoans((all: Loan[]) =>
+      all.map((x) =>
+        x.id !== loan.id
+          ? x
+          : {
+              ...x,
+              paymentStyle: a === "fixed_amort" ? "fixed_amort" : "annuity",
+              loanType: a === "fixed_amort" ? "Rak amortering" : "Annuitet",
+              // Byter man till rak amortering behöver amorteringsdelen ett
+              // värde att utgå från: dagens månadskostnad minus räntan.
+              monthlyPrincipal:
+                a === "fixed_amort" ? principalOf(x) : undefined,
+            },
+      ),
     );
   };
   const addPreset = (kind: LoanKind) => {
@@ -2291,7 +2350,6 @@ function TodayV5({
                                   .toFixed(1)
                                   .replace(".", sv ? "," : ".")}
                                 suffix=" %"
-                                decimal
                                 onChange={(value) => {
                                   const minimum =
                                     kind === "mortgage" || kind === "personal"
@@ -2318,17 +2376,53 @@ function TodayV5({
                               ) : null}
                             </div>
                             <div className="col-span-2 sm:col-span-1">
-                              <Field
-                                label={sv ? "Månadskostnad" : "Monthly cost"}
-                                value={number(loan.currentMonthlyPayment, lang)}
-                                onChange={(value) =>
-                                  updateLoan(
-                                    loan.id,
-                                    "currentMonthlyPayment",
-                                    value,
-                                  )
-                                }
-                              />
+                              {/* Vid rak amortering är amorteringen det fasta
+                                  och månadskostnaden följden. Att fråga efter
+                                  månadskostnaden är att fråga efter fel
+                                  siffra — banken anger amorteringen. */}
+                              {loan.paymentStyle === "fixed_amort" ? (
+                                <Field
+                                  label={sv ? "Amortering / mån" : "Principal / mo"}
+                                  value={number(principalOf(loan), lang)}
+                                  onChange={(value) =>
+                                    updateLoan(loan.id, "monthlyPrincipal", value)
+                                  }
+                                  hint={
+                                    <>
+                                      {sv ? "Månadskostnad nu " : "Monthly cost now "}
+                                      <b className="text-white/70">
+                                        {number(
+                                          principalOf(loan) + monthInterestOf(loan),
+                                          lang,
+                                        )}{" "}
+                                        kr
+                                      </b>{" "}
+                                      ({number(principalOf(loan), lang)}
+                                      {sv ? " + " : " + "}
+                                      {number(monthInterestOf(loan), lang)}
+                                      {sv ? " ränta" : " interest"})
+                                    </>
+                                  }
+                                />
+                              ) : (
+                                <Field
+                                  label={sv ? "Månadskostnad" : "Monthly cost"}
+                                  value={number(loan.currentMonthlyPayment, lang)}
+                                  onChange={(value) =>
+                                    updateLoan(
+                                      loan.id,
+                                      "currentMonthlyPayment",
+                                      value,
+                                    )
+                                  }
+                                  hint={
+                                    <>
+                                      {sv ? "varav ränta nu " : "of which interest "}
+                                      {number(monthInterestOf(loan), lang)} kr
+                                    </>
+                                  }
+                                />
+                              )}
                             </div>
                           </div>
 
@@ -2426,35 +2520,17 @@ function TodayV5({
                                 }
                               />
 
-                              <div>
-                                <Field
-                                  label={t.extra}
-                                  value={number(loan.extraMonthly || 0, lang)}
-                                  onChange={(value) =>
-                                    updateLoan(loan.id, "extraMonthly", value)
-                                  }
-                                />
-                                <p className="mt-3 text-xs text-white/65">
-                                  {sv
-                                    ? `När lånet är klart flyttas ${number(freedMonthly(loan), lang)} kr/mån automatiskt till nästa lån i ordningen.`
-                                    : `When this is paid off, SEK ${number(freedMonthly(loan), lang)}/month rolls into the next debt in line.`}
-                                </p>
-                                <p className="mt-2 text-xs text-white/65">
-                                  {sv
-                                    ? "Du betalar totalt"
-                                    : "You pay a total of"}{" "}
-                                  <b className="text-white">
-                                    {money(
-                                      loan.balance +
-                                        (planLoan?.totalInterest || 0),
-                                      lang,
-                                    )}
-                                  </b>{" "}
-                                  · {sv ? "varav" : "including"}{" "}
-                                  {money(planLoan?.totalInterest || 0, lang)}{" "}
-                                  {sv ? "ränta" : "interest"}
-                                </p>
-                              </div>
+                              <PaymentBoost
+                                lang={lang}
+                                loan={loan}
+                                onChange={(patch) =>
+                                  setLoans((all: Loan[]) =>
+                                    all.map((x) =>
+                                      x.id === loan.id ? { ...x, ...patch } : x,
+                                    ),
+                                  )
+                                }
+                              />
                             </div>
                           ) : null}
                         </>
@@ -2479,30 +2555,358 @@ function TodayV5({
       </div>
       <aside className="order-3 min-w-0 space-y-3 lg:order-none lg:col-start-2 lg:row-start-2">
         {highestRateLoan ? (
-          <SavingsVsPayoff
-            lang={lang}
-            loanRate={highestRateLoan.interestRate}
-            loanName={highestRateLoan.name}
-            deductible={isDeductible(loanKinds[highestRateLoan.id])}
-          />
+          <Tool
+            title={sv ? "Ska jag amortera eller spara?" : "Save or pay off?"}
+            summary={
+              sv
+                ? `Jämför sparkonto mot att betala av ${highestRateLoan.name}`
+                : `Compare saving against paying down ${highestRateLoan.name}`
+            }
+          >
+            <SavingsVsPayoff
+              lang={lang}
+              loanRate={highestRateLoan.interestRate}
+              loanName={highestRateLoan.name}
+              deductible={isDeductible(loanKinds[highestRateLoan.id])}
+            />
+          </Tool>
         ) : null}
         {mortgage && stressed ? (
-          <Fear
-            lang={lang}
-            rate={fearRate}
-            setRate={setFearRate}
-            mortgage={mortgage}
-            plan={plan}
-            stressed={stressed}
-            income={income}
-            setIncome={setIncome}
-            monthly={monthlyTotal}
-          />
+          <Tool
+            title={sv ? "Tänk om räntan stiger" : "What if rates rise"}
+            summary={
+              sv
+                ? `Se vad en högre ränta gör med ${mortgage.name}`
+                : `See what a higher rate does to ${mortgage.name}`
+            }
+          >
+            <Fear
+              lang={lang}
+              rate={fearRate}
+              setRate={setFearRate}
+              mortgage={mortgage}
+              plan={plan}
+              stressed={stressed}
+            />
+          </Tool>
         ) : null}
       </aside>
     </main>
   );
 }
+/** Kör ett enskilt lån för sig självt, med valfria påslag. */
+function soloRun(
+  loan: Loan,
+  over: { target?: number; extra?: number } = {},
+): PlanLoanResult {
+  return simulatePlan({
+    loans: [
+      {
+        id: loan.id,
+        name: loan.name,
+        balance: loan.balance,
+        interestRate: loan.interestRate,
+        paymentStyle: loan.paymentStyle,
+        monthlyPayment: loan.currentMonthlyPayment,
+        monthlyPrincipal: loan.monthlyPrincipal,
+        targetMonthlyEnabled: Boolean(over.target),
+        targetMonthlyTotal: over.target,
+        extraMonthlyEnabled: Boolean(over.extra),
+        extraMonthly: over.extra,
+      },
+    ],
+    strategy: "custom",
+    startDate: START,
+    oneTimePayments: [],
+    rollover: false,
+  }).loans[0];
+}
+
+/**
+ * Höj betalningen och se vad det gör.
+ *
+ * Två olika saker, som beter sig olika vid rak amortering:
+ *
+ *   Fyll upp till X  — du betalar X varje månad. Ordinarie kostnad sjunker
+ *                      med räntan, så påslaget växer och totalen ligger still.
+ *   Betala extra Y   — Y ovanpå ordinarie. Du betalar mest i början, när
+ *                      skulden och räntan är som störst.
+ *
+ * Effekten räknas mot samma lån utan påslag, så "3 år tidigare" betyder
+ * tidigare än om du inte gjorde någonting.
+ */
+function PaymentBoost({
+  lang,
+  loan,
+  onChange,
+}: {
+  lang: Lang;
+  loan: Loan;
+  onChange: (patch: Partial<Loan>) => void;
+}) {
+  const sv = lang === "sv";
+  const principal = principalOf(loan);
+  const interest = monthInterestOf(loan);
+  const regular =
+    loan.paymentStyle === "fixed_amort"
+      ? principal + interest
+      : loan.currentMonthlyPayment;
+
+  const targetOn = Boolean(loan.targetMonthlyEnabled && loan.targetMonthlyTotal);
+  const extraOn = Boolean(loan.extraMonthlyEnabled && loan.extraMonthly);
+  const target = loan.targetMonthlyTotal || 0;
+  const extra = loan.extraMonthly || 0;
+
+  const { base, chosen, bump } = useMemo(() => {
+    const opts = {
+      target: targetOn ? target : undefined,
+      extra: extraOn ? extra : undefined,
+    };
+    return {
+      base: soloRun(loan),
+      chosen: soloRun(loan, opts),
+      // Vad ytterligare 500 kr i månaden skulle ge ovanpå det valda.
+      bump: soloRun(loan, { ...opts, extra: (opts.extra || 0) + 500 }),
+    };
+  }, [loan, targetOn, extraOn, target, extra]);
+
+  const topUpNow = targetOn ? Math.max(0, target - regular) : 0;
+  const payingNow = regular + topUpNow + (extraOn ? extra : 0);
+  const boosted = targetOn || extraOn;
+
+  const monthsSaved =
+    base.fullyPaid && chosen.fullyPaid
+      ? Math.max(0, base.finishMonth! - chosen.finishMonth!)
+      : 0;
+  const interestSaved =
+    base.fullyPaid && chosen.fullyPaid
+      ? Math.max(0, base.totalInterest - chosen.totalInterest)
+      : 0;
+  const bumpMonths =
+    chosen.fullyPaid && bump.fullyPaid
+      ? Math.max(0, chosen.finishMonth! - bump.finishMonth!)
+      : 0;
+  const bumpInterest =
+    chosen.fullyPaid && bump.fullyPaid
+      ? Math.max(0, chosen.totalInterest - bump.totalInterest)
+      : 0;
+
+  return (
+    <div className="space-y-3">
+      <BoostRow
+        checked={targetOn}
+        label={sv ? "Fyll upp till" : "Top up to"}
+        unit={sv ? "kr/mån" : "SEK/mo"}
+        value={target || Math.ceil((regular + 200) / 100) * 100}
+        onToggle={(on) =>
+          onChange({
+            targetMonthlyEnabled: on,
+            targetMonthlyTotal:
+              loan.targetMonthlyTotal || Math.ceil((regular + 200) / 100) * 100,
+            targetMonthlyFrom: START,
+          })
+        }
+        onValue={(n) => onChange({ targetMonthlyTotal: n })}
+      />
+      <BoostRow
+        checked={extraOn}
+        label={sv ? "Betala extra" : "Pay extra"}
+        unit={sv ? "kr/mån" : "SEK/mo"}
+        value={extra}
+        onToggle={(on) =>
+          onChange({ extraMonthlyEnabled: on, extraMonthlyFrom: START })
+        }
+        onValue={(n) => onChange({ extraMonthly: n })}
+      />
+
+      <div className="rounded-xl border border-white/[.06] bg-black/20 p-3">
+        <div className="text-[11px] uppercase tracking-[.12em] text-white/45">
+          {sv ? "Nästa betalning" : "Next payment"}
+        </div>
+        <div className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
+          <span className="tabular-nums">{number(principal, lang)}</span>
+          <span className="text-white/40">{sv ? "amortering" : "principal"}</span>
+          <span className="text-white/30">+</span>
+          <span className="tabular-nums">{number(interest, lang)}</span>
+          <span className="text-white/40">{sv ? "ränta" : "interest"}</span>
+          {topUpNow > 0 ? (
+            <>
+              <span className="text-white/30">+</span>
+              <span className="tabular-nums text-blue-300">
+                {number(topUpNow, lang)}
+              </span>
+              <span className="text-white/40">{sv ? "påslag" : "top-up"}</span>
+            </>
+          ) : null}
+          {extraOn && extra > 0 ? (
+            <>
+              <span className="text-white/30">+</span>
+              <span className="tabular-nums text-blue-300">
+                {number(extra, lang)}
+              </span>
+              <span className="text-white/40">{sv ? "extra" : "extra"}</span>
+            </>
+          ) : null}
+          <span className="text-white/30">=</span>
+          <b className="tabular-nums">{number(payingNow, lang)} kr</b>
+        </div>
+        {loan.paymentStyle === "fixed_amort" ? (
+          <p className="mt-2 text-[11px] leading-4 text-white/45">
+            {targetOn
+              ? sv
+                ? "Räntan sjunker varje månad, så påslaget växer och du betalar samma summa hela vägen."
+                : "Interest falls each month, so the top-up grows and you pay the same amount throughout."
+              : sv
+                ? "Räntan sjunker varje månad, så månadskostnaden blir lägre med tiden."
+                : "Interest falls each month, so the monthly cost drops over time."}
+          </p>
+        ) : null}
+      </div>
+
+      <div
+        className={`rounded-xl border p-3 ${boosted && monthsSaved > 0 ? "border-emerald-400/25 bg-emerald-500/[.07]" : "border-white/[.06] bg-black/20"}`}
+      >
+        {!chosen.fullyPaid ? (
+          <p className="text-sm text-orange-300">
+            {sv
+              ? "Betalningen täcker inte räntan — skulden växer."
+              : "The payment does not cover the interest — the debt grows."}
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <span className="text-sm text-white/60">
+                {sv ? "Lånet är klart" : "Paid off"}
+              </span>
+              <b className="text-lg">{month(chosen.endDate, lang)}</b>
+            </div>
+            <p className="mt-1 text-xs text-white/55">
+              {monthsSaved > 0 ? (
+                <span className="text-emerald-300">
+                  {duration(monthsSaved, lang)} {sv ? "tidigare" : "earlier"} ·{" "}
+                  {sv ? "sparar" : "saves"} {money(interestSaved, lang)}{" "}
+                  {sv ? "i ränta" : "in interest"}
+                </span>
+              ) : (
+                <>
+                  {sv ? "Total ränta" : "Total interest"}{" "}
+                  {money(chosen.totalInterest, lang)}
+                </>
+              )}
+            </p>
+            {bumpMonths > 0 ? (
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    extraMonthlyEnabled: true,
+                    extraMonthly: (extraOn ? extra : 0) + 500,
+                    extraMonthlyFrom: START,
+                  })
+                }
+                className="mt-3 w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-left text-xs leading-4 transition hover:bg-white/[.09]"
+              >
+                💡{" "}
+                {sv
+                  ? `500 kr mer i månaden: klart ${duration(bumpMonths, lang)} tidigare och ${money(bumpInterest, lang)} mindre i ränta.`
+                  : `SEK 500 more per month: ${duration(bumpMonths, lang)} earlier and ${money(bumpInterest, lang)} less interest.`}
+                <span className="mt-0.5 block text-blue-300">
+                  {sv ? "Lägg till →" : "Add it →"}
+                </span>
+              </button>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BoostRow({
+  checked,
+  label,
+  unit,
+  value,
+  onToggle,
+  onValue,
+}: {
+  checked: boolean;
+  label: string;
+  unit: string;
+  value: number;
+  onToggle: (on: boolean) => void;
+  onValue: (n: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <label className="flex min-h-[44px] flex-1 items-center gap-2.5 text-sm">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onToggle(e.target.checked)}
+          className="h-[18px] w-[18px] shrink-0 accent-blue-500"
+        />
+        <span className={checked ? "" : "text-white/60"}>{label}</span>
+      </label>
+      {checked ? (
+        <div className="flex items-center gap-2">
+          <input
+            inputMode="numeric"
+            value={value || ""}
+            onFocus={(e) => e.currentTarget.select()}
+            onChange={(e) => {
+              const n = Number(e.target.value.replace(/[^0-9]/g, ""));
+              onValue(Number.isFinite(n) ? Math.min(1_000_000, n) : 0);
+            }}
+            className="h-11 w-24 rounded-lg border border-white/[.1] bg-black/30 px-3 text-right text-[16px] tabular-nums outline-none transition focus:border-blue-400/40"
+          />
+          <span className="shrink-0 text-xs text-white/45">{unit}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Verktyg som ligger efter lånen. De låg tidigare uppfällda och dök upp mitt
+ * i scrollen med varsin stor rubrik, som om man hamnat på en annan sida.
+ * Hopfällda tar de en rad var tills man vill ha dem.
+ */
+function Tool({
+  title,
+  summary,
+  children,
+}: {
+  title: string;
+  summary: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="card overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 p-4 text-left transition hover:bg-white/[.03]"
+      >
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold">{title}</span>
+          <span className="mt-0.5 block truncate text-xs text-white/50">
+            {summary}
+          </span>
+        </span>
+        <span
+          className={`shrink-0 text-white/40 transition-transform ${open ? "rotate-180" : ""}`}
+        >
+          ▾
+        </span>
+      </button>
+      {open ? <div className="border-t border-white/[.06] p-4 pt-4">{children}</div> : null}
+    </div>
+  );
+}
+
 function Select({
   label,
   value,
@@ -2534,9 +2938,6 @@ function Fear({
   mortgage,
   plan,
   stressed,
-  income,
-  setIncome,
-  monthly,
 }: {
   lang: Lang;
   rate: number;
@@ -2544,11 +2945,7 @@ function Fear({
   mortgage: Loan;
   plan: PlanResult;
   stressed: PlanResult;
-  income: number;
-  setIncome: (n: number) => void;
-  monthly: number;
 }) {
-  const [incomeDrop, setIncomeDrop] = useState(20);
   const sv = lang === "sv",
     monthlyShock = (mortgage.balance * (rate / 100)) / 12,
     // Båda sidor kommer ur samma motor, så skillnaden är ren ränteeffekt.
@@ -2558,9 +2955,11 @@ function Fear({
         ? Math.max(0, stressed.totalMonths - plan.totalMonths)
         : 0;
   return (
-    <div className="card rounded-xl p-3">
-      <div className="flex items-center justify-between">
-        <b>{sv ? "Tänk om räntan stiger" : "What if rates rise"}</b>
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm text-white/60">
+          {sv ? "Höjning" : "Increase"}
+        </span>
         <input
           type="number"
           min="0.1"
@@ -2573,9 +2972,6 @@ function Fear({
           className="h-8 w-20 rounded-lg border border-white/10 bg-black/20 px-2 text-right text-xs text-orange-300 outline-none"
         />
       </div>
-      <p className="mt-4 text-xs text-white/65">
-        {sv ? "Om räntan går upp" : "If rates increase"} +{rate}%
-      </p>
       <input
         type="range"
         min="0.1"
@@ -2614,35 +3010,6 @@ function Fear({
           </>
         ) : null}
       </div>
-      <label className="mt-4 block text-xs text-white/65">
-        {sv ? "Nettoinkomst (valfritt)" : "Net income (optional)"}
-        <input
-          spellCheck={false}
-          type="number"
-          value={income || ""}
-          onChange={(e) => setIncome(+e.target.value)}
-          className="input mt-2"
-        />
-      </label>
-      <label className="mt-3 block text-xs text-white/65">
-        {sv ? "Om inkomsten går ner" : "If income drops"} {incomeDrop}%
-        <input
-          type="range"
-          min="10"
-          max="50"
-          step="5"
-          value={incomeDrop}
-          onChange={(e) => setIncomeDrop(+e.target.value)}
-          className="mt-2 w-full accent-red-500"
-        />
-      </label>
-      {income > 0 && monthly / income > 0.6 && (
-        <p className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
-          {sv
-            ? "Utgifterna är över 60% av inkomsten. Klarar du 20% lägre inkomst?"
-            : "Outflow exceeds 60% of income. Could you handle a 20% income drop?"}
-        </p>
-      )}
     </div>
   );
 }

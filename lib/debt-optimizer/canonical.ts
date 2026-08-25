@@ -35,6 +35,12 @@ export interface PlanLoan {
   paymentStyle: LoanPaymentStyle;
   /** Bas: ränta + amortering. Aviavgifter ingår ALDRIG (P0). */
   monthlyPayment: number;
+  /**
+   * Rak amortering: den fasta amorteringsdelen. Anges den används den rakt av.
+   * Utan den härleds den ur monthlyPayment minus ingående ränta, vilket gör
+   * att en räntejustering tyst flyttar amorteringen.
+   */
+  monthlyPrincipal?: number;
   targetMonthlyTotal?: number;
   targetMonthlyEnabled?: boolean;
   targetMonthlyFrom?: string;
@@ -125,14 +131,24 @@ interface LoanState {
 function createState(loan: PlanLoan, order: number): LoanState {
   const balance = new Big(Math.max(0, loan.balance));
   const monthlyRate = new Big(Math.max(0, loan.interestRate)).div(12);
-  const basePayment = new Big(Math.max(0, loan.monthlyPayment));
+  const statedPrincipal =
+    loan.paymentStyle === "fixed_amort" &&
+    typeof loan.monthlyPrincipal === "number" &&
+    loan.monthlyPrincipal > 0
+      ? new Big(loan.monthlyPrincipal)
+      : null;
+  // Med ett angivet amorteringsbelopp är månadskostnaden en följd av det plus
+  // räntan, inte tvärtom.
+  const basePayment = statedPrincipal
+    ? statedPrincipal.plus(balance.times(monthlyRate))
+    : new Big(Math.max(0, loan.monthlyPayment));
   return {
     source: loan,
     order,
     balance,
     monthlyRate,
     basePayment,
-    fixedPrincipal: basePayment.minus(balance.times(monthlyRate)),
+    fixedPrincipal: statedPrincipal ?? basePayment.minus(balance.times(monthlyRate)),
     interest: new Big(0),
     focusMonths: 0,
     aliveMonths: 0,

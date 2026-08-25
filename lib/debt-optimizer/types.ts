@@ -10,6 +10,17 @@ export interface Loan {
   interestRate: number; // 0.0595 = 5.95%
   currentMonthlyPayment: number; // dagens totala månadskostnad (ränta + amortering)
 
+  /**
+   * Rak amortering: det belopp som går till att minska skulden varje månad.
+   * Det är den siffra banken anger, och den som är fast — månadskostnaden
+   * är amortering + ränta och sjunker med tiden.
+   *
+   * Utan den här härleds amorteringen ur månadskostnaden minus räntan, vilket
+   * betyder att en ändrad ränta tyst ändrar amorteringen. Så fungerar inte
+   * ett lån med rak amortering.
+   */
+  monthlyPrincipal?: number;
+
   // NY LOGIK: "Höj betalning varje månad till VALFRI summa"
   targetMonthlyTotal?: number; // ex 2000 för Nordea, 7000 för Nordax
   targetMonthlyEnabled?: boolean;
