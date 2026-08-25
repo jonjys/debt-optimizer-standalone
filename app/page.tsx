@@ -60,12 +60,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Lang = "en" | "sv";
 type Tab = "today" | "compare" | "refinance";
-type Reinvestment = {
-  fromLoanId: string;
-  toLoanId: string;
-  amount: number;
-  enabled: boolean;
-};
 type LoanKind =
   | "mortgage"
   | "personal"
@@ -494,8 +488,6 @@ export default function Page() {
     Record<string, LeasingTerms>
   >({});
   const [timeBoxes, setTimeBoxes] = useState<Record<string, TimeBox>>({});
-  const [strategy, setStrategy] = useState<PayoffStrategy>("avalanche");
-  const [reinvestments, setReinvestments] = useState<Reinvestment[]>([]);
   const [propertyValue, setPropertyValue] = useState(3_027_201);
   const [mortgageValue, setMortgageValue] = useState(2_128_112);
   const [bakeAmount, setBakeAmount] = useState(180_000);
@@ -525,26 +517,6 @@ export default function Page() {
     );
   }, [lang]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const withReinvestments = useCallback(
-    (source: Loan[]) =>
-      source.map((loan) => {
-        const rule = reinvestments.find(
-          (r) => r.enabled && r.toLoanId === loan.id,
-        );
-        return {
-          ...loan,
-          reinvestment: rule
-            ? {
-                enabled: true,
-                fromLoanId: rule.fromLoanId,
-                amount: rule.amount,
-                startDate: START,
-              }
-            : undefined,
-        };
-      }),
-    [reinvestments],
-  );
   const debtLoans = useMemo(
     () => loans.filter((loan) => loanKinds[loan.id] !== "leasing"),
     [loanKinds, loans],
@@ -557,7 +529,7 @@ export default function Page() {
    */
   const planLoans = useMemo<PlanLoan[]>(
     () =>
-      withReinvestments(debtLoans).map((loan) => ({
+      debtLoans.map((loan) => ({
         id: loan.id,
         name: loan.name,
         balance: loan.balance,
@@ -568,12 +540,11 @@ export default function Page() {
         paymentStyle: loan.paymentStyle,
         extraMonthly: loan.extraMonthly,
         extraMonthlyEnabled: loan.extraMonthlyEnabled,
-        reinvestment: loan.reinvestment,
         timeBoxMonths: timeBoxes[loan.id]?.enabled
           ? timeBoxes[loan.id].months
           : undefined,
       })),
-    [debtLoans, timeBoxes, withReinvestments],
+    [debtLoans, timeBoxes],
   );
   const runPlan = useCallback(
     (order: PayoffStrategy) =>
@@ -715,24 +686,6 @@ export default function Page() {
       ];
     });
   };
-  const setRule = (from: Loan, toLoanId: string) =>
-    setReinvestments((current) => [
-      ...current.filter((r) => r.fromLoanId !== from.id),
-      ...(toLoanId
-        ? [
-            {
-              fromLoanId: from.id,
-              toLoanId,
-              amount: from.currentMonthlyPayment + (from.extraMonthly || 0),
-              enabled: true,
-            },
-          ]
-        : []),
-    ]);
-  const updateRuleAmount = (fromId: string, amount: number) =>
-    setReinvestments((current) =>
-      current.map((r) => (r.fromLoanId === fromId ? { ...r, amount } : r)),
-    );
   const scrollToApp = () =>
     requestAnimationFrame(() =>
       appRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
@@ -774,14 +727,6 @@ export default function Page() {
     setExpanded({ personal: true });
     setLeasingTerms({});
     setTimeBoxes({});
-    setReinvestments([
-      {
-        fromLoanId: "personal",
-        toLoanId: "mortgage",
-        amount: 5_700,
-        enabled: true,
-      },
-    ]);
     setStarted(true);
     setToast(
       lang === "sv"
@@ -791,20 +736,6 @@ export default function Page() {
     window.setTimeout(() => setToast(null), 3200);
     scrollToApp();
   };
-  const handlePdf = (file?: File) => {
-    if (!file || file.type !== "application/pdf") {
-      setToast(lang === "sv" ? "Välj en PDF-fil" : "Please choose a PDF file");
-      window.setTimeout(() => setToast(null), 3200);
-      return;
-    }
-    fillSample();
-    setToast(
-      lang === "sv"
-        ? "PDF mottagen · exempeldata används tills tolkning är klar"
-        : "PDF received · sample fallback loaded",
-    );
-  };
-
   return (
     <div className="min-h-screen bg-[#06060A] text-white selection:bg-blue-500/30">
       <Header lang={lang} tab={tab} setTab={setTab} setLang={setLanguage} />
@@ -826,11 +757,6 @@ export default function Page() {
               setLoans={setLoans}
               t={t}
               result={result}
-              strategy={strategy}
-              setStrategy={setStrategy}
-              reinvestments={reinvestments}
-              setRule={setRule}
-              updateRuleAmount={updateRuleAmount}
               updateLoan={updateLoan}
               total={total}
               monthlyTotal={monthlyTotal}
@@ -851,7 +777,6 @@ export default function Page() {
               setTimeBoxes={setTimeBoxes}
               plan={plan}
               avalanchePlan={avalanchePlan}
-              onPdf={handlePdf}
             />
           )}
           {tab === "compare" && (
@@ -932,9 +857,6 @@ function Header({
             <TrendingDown size={18} />
           </span>
           <b>DebtKill</b>
-          <span className="rounded-full border border-blue-400/20 bg-blue-500/10 px-2 py-1 text-[11px] font-bold tracking-widest text-blue-300">
-            PRO
-          </span>
         </div>
         <nav className="absolute left-1/2 hidden -translate-x-1/2 rounded-full border border-white/[.06] bg-white/[.025] p-1 md:flex">
           {(Object.keys(t.tabs) as Tab[]).map((key) => (
@@ -968,7 +890,6 @@ function ResultSidebar({
   lang,
   t,
   loans,
-  reinvestments = [],
   plan,
   avalanchePlan,
   monthlyTotal,
@@ -976,7 +897,6 @@ function ResultSidebar({
   lang: Lang;
   t: Copy;
   loans: Loan[];
-  reinvestments?: Reinvestment[];
   plan: PlanResult;
   avalanchePlan: PlanResult;
   monthlyTotal?: number;
@@ -1120,23 +1040,33 @@ function ResultSidebar({
             <div className="ml-9 mt-1 text-[12px] text-white/55">
               {describePace(x, lang)}
             </div>
-            {reinvestments
-              .filter(
-                (r: Reinvestment) =>
-                  r.fromLoanId === x.id &&
-                  r.enabled &&
-                  loans.some((loan: Loan) => loan.id === r.toLoanId),
-              )
-              .map((r: Reinvestment) => (
-                <div
-                  key={r.fromLoanId}
-                  className="ml-9 mt-2 flex items-center gap-1 text-[12px] text-blue-300"
-                >
-                  <ArrowRight size={11} />
-                  {number(r.amount, lang)} kr →{" "}
-                  {loans.find((l: Loan) => l.id === r.toLoanId)?.name}
+            {/* Vart de frigjorda pengarna tar vägen läses ur planen, inte ur
+                en egen lista vid sidan av. Tidigare fanns en separat
+                återinvesteringsregel som lade samma belopp en gång till
+                ovanpå det som redan rullade vidare.
+
+                Mottagaren är det första lånet i ordningen som fortfarande har
+                skuld kvar när det här blir klart — inte nästa i listan, som
+                mycket väl kan vara betalt sedan länge. */}
+            {(() => {
+              const source = loans.find((l) => l.id === x.id);
+              if (!x.fullyPaid || !source || x.finishMonth === null) return null;
+              const receiver = plan.loans.find(
+                (row) =>
+                  row.id !== x.id &&
+                  (row.finishMonth === null || row.finishMonth > x.finishMonth!),
+              );
+              const freed = freedMonthly(source);
+              if (!receiver || freed <= 0) return null;
+              return (
+                <div className="ml-9 mt-2 flex items-center gap-1 text-[12px] text-blue-300">
+                  <ArrowRight size={11} className="shrink-0" />
+                  <span className="truncate">
+                    {number(freed, lang)} kr/{sv ? "mån" : "mo"} → {receiver.name}
+                  </span>
                 </div>
-              ))}
+              );
+            })()}
           </div>
         ))}
       </div>
@@ -1737,8 +1667,8 @@ function SavingsVsPayoff({
             onChange={(e) => setDeduction(e.target.checked)}
             className="h-4 w-4 shrink-0 accent-blue-500"
           />
-          <span>
-            {sv ? "Ränteavdrag 30 %" : "30% interest deduction"}
+          <span className="min-w-0">
+            {sv ? "Ränteavdrag" : "Deduction"}
             {!deductible && (
               <span className="mt-0.5 block text-[11px] text-white/45">
                 {sv
@@ -1822,11 +1752,6 @@ function TodayV5(p: any) {
       setLoans,
       t,
       result,
-      strategy,
-      setStrategy,
-      reinvestments,
-      setRule,
-      updateRuleAmount,
       updateLoan,
       monthlyTotal,
       addDebt,
@@ -1846,7 +1771,6 @@ function TodayV5(p: any) {
       setTimeBoxes,
       plan,
       avalanchePlan,
-      onPdf,
     } = p,
     sv = lang === "sv";
   const debtPlanLoans = useMemo<Loan[]>(
@@ -2034,20 +1958,10 @@ function TodayV5(p: any) {
               : "Loans, leasing or installments—compare on equal terms."
           }
           action={
-            <div className="flex gap-2">
-              <label className="button cursor-pointer">
-                📎 {sv ? "Bifoga lånebesked PDF" : "Attach loan PDF"}
-                <input
-                  type="file"
-                  className="hidden"
-                  onChange={(e) => onPdf(e.target.files?.[0])}
-                />
-              </label>
-              <button onClick={addDebt} className="button">
-                <Plus size={14} />
-                {t.add}
-              </button>
-            </div>
+            <button onClick={addDebt} className="button w-full md:w-auto">
+              <Plus size={14} />
+              {t.add}
+            </button>
           }
         />
         <div className="-mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] md:mx-0 md:flex-wrap md:overflow-visible md:px-0">
@@ -2427,7 +2341,6 @@ function TodayV5(p: any) {
           lang={lang}
           t={t}
           loans={debtPlanLoans}
-          reinvestments={reinvestments}
           plan={plan}
           avalanchePlan={avalanchePlan}
           monthlyTotal={monthlyTotal}

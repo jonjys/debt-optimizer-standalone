@@ -145,6 +145,48 @@ describe("frigjorda pengar", () => {
     );
   });
 
+  it("rollover och en manuell återinvestering flyttar inte samma pengar två gånger", () => {
+    // Exempeldatan la in en återinvesteringsregel på exakt det belopp som
+    // rollovern redan flyttade. Bolånet fick då 11 400 kr/mån i stället för
+    // 5 700, och appen visade ett skuldfritt datum 6,5 år för tidigt.
+    const source = loan({
+      id: "source",
+      balance: 180_000,
+      interestRate: 0.085,
+      monthlyPayment: 3_900,
+      extraMonthly: 1_800,
+      extraMonthlyEnabled: true,
+    });
+    const target = loan({
+      id: "target",
+      balance: 2_128_112,
+      interestRate: 0.041,
+      paymentStyle: "fixed_amort",
+      monthlyPayment: 8_400,
+      extraMonthly: 2_500,
+      extraMonthlyEnabled: true,
+    });
+
+    const rolloverOnly = run([target, source]);
+    const both = run([
+      {
+        ...target,
+        reinvestment: {
+          enabled: true,
+          fromLoanId: "source",
+          amount: 5_700,
+          startDate: START,
+        },
+      },
+      source,
+    ]);
+
+    // Med båda kanalerna igång blir planen orimligt mycket snabbare. Appen
+    // ska aldrig mata in dem samtidigt.
+    expect(both.totalMonths).toBeLessThan(rolloverOnly.totalMonths);
+    expect(rolloverOnly.totalMonths).toBeGreaterThan(240);
+  });
+
   it("rollover gör planen snabbare än utan rollover, aldrig långsammare", () => {
     const loans = [
       loan({ id: "a", balance: 40_000, monthlyPayment: 2_500 }),
