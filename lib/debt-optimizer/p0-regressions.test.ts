@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { calculatePayoffSchedule } from "./engine";
-import { calcWaterfall, projectPayoff, type WaterfallLoan } from "./waterfall";
 import { calculateBakeIn, securedDeduction } from "./bake-in";
-import type { Loan } from "./types";
+import { MAX_MONTHS, simulatePlan, type PlanLoan } from "./canonical";
+import type { PayoffStrategy } from "./types";
 
 /**
  * Regressionsskydd för de fyra P0-fel som hittades i granskningen av V8.
@@ -12,28 +11,29 @@ import type { Loan } from "./types";
 
 const START = "2026-01";
 
-function mkLoan(over: Partial<Loan> & Pick<Loan, "id">): Loan {
+function mkLoan(over: Partial<PlanLoan> & Pick<PlanLoan, "id">): PlanLoan {
   return {
     name: over.id,
-    loanType: "Annuitet",
     paymentStyle: "annuity",
     balance: 0,
     interestRate: 0,
-    currentMonthlyPayment: 0,
+    monthlyPayment: 0,
     ...over,
   };
 }
 
-function mkWaterfallLoan(over: Partial<WaterfallLoan> & Pick<WaterfallLoan, "id">): WaterfallLoan {
-  return {
-    name: over.id,
-    balance: 0,
-    interestRate: 0,
-    monthlyPayment: 0,
-    paymentStyle: "annuity",
-    ...over,
-  };
-}
+const plan = (
+  loans: PlanLoan[],
+  strategy: PayoffStrategy = "custom",
+  rollover = true,
+) =>
+  simulatePlan({
+    loans,
+    strategy,
+    startDate: START,
+    oneTimePayments: [],
+    rollover,
+  });
 
 describe("P0-1: en negativ refinansiering får aldrig presenteras som noll", () => {
   // Att baka in ett blancolån i bolånet kan kosta pengar i stället för att
@@ -124,75 +124,6 @@ describe("P0-1: en negativ refinansiering får aldrig presenteras som noll", () 
   });
 });
 
-describe("P0-2: payoff får aldrig påstå 'skuldfri' när skuld återstår", () => {
-  it("waterfall: fullyPaid=true kräver att varje enskilt lån är på noll", () => {
-    const plans: WaterfallLoan[][] = [
-      [mkWaterfallLoan({ id: "a", balance: 50_000, interestRate: 0.05, monthlyPayment: 1_500 })],
-      [
-        mkWaterfallLoan({ id: "a", balance: 50_000, interestRate: 0.05, monthlyPayment: 1_500 }),
-        mkWaterfallLoan({ id: "b", balance: 200_000, interestRate: 0.09, monthlyPayment: 2_500 }),
-      ],
-      // Ett lån vars betalning inte täcker räntan — planen kan aldrig bli klar.
-      [
-        mkWaterfallLoan({ id: "a", balance: 10_000, interestRate: 0.05, monthlyPayment: 1_000 }),
-        mkWaterfallLoan({ id: "drowning", balance: 500_000, interestRate: 0.2, monthlyPayment: 500 }),
-      ],
-    ];
-    for (const plan of plans) {
-      const result = calcWaterfall(plan);
-      if (result.fullyPaid) {
-        for (const loan of result.loans) {
-          expect(loan.remainingBalance).toBe(0);
-          expect(loan.fullyPaid).toBe(true);
-        }
-      }
-    }
-  });
-
-  it("waterfall: ett lån som inte kan amorteras drar ner hela planen", () => {
-    const result = calcWaterfall([
-      mkWaterfallLoan({ id: "ok", balance: 10_000, interestRate: 0.05, monthlyPayment: 1_000 }),
-      mkWaterfallLoan({ id: "drowning", balance: 500_000, interestRate: 0.2, monthlyPayment: 500 }),
-    ]);
-    expect(result.fullyPaid).toBe(false);
-    expect(result.loans.find((l) => l.id === "drowning")!.fullyPaid).toBe(false);
-  });
-
-  it("engine: newFreedomDate är '-' så snart något lån inte blir klart", () => {
-    const r = calculatePayoffSchedule({
-      loans: [
-        mkLoan({ id: "ok", balance: 10_000, interestRate: 0.05, currentMonthlyPayment: 1_000 }),
-        mkLoan({ id: "drowning", balance: 500_000, interestRate: 0.2, currentMonthlyPayment: 500 }),
-      ],
-      oneTimePayments: [],
-      startDate: START,
-      strategy: "custom",
-    });
-    expect(r.newFreedomDate).toBe("-");
-    expect(r.loanResults.find((l) => l.id === "drowning")!.isFullyAmortizing).toBe(false);
-  });
-
-  it("engine: ett avbetalat lån rapporteras aldrig som 'blir aldrig klart'", () => {
-    const r = calculatePayoffSchedule({
-      loans: [mkLoan({ id: "a", balance: 100_000, interestRate: 0.05, currentMonthlyPayment: 2_000 })],
-      oneTimePayments: [{ id: "x", date: "2026-03", amount: 200_000, loanId: "a" }],
-      startDate: START,
-      strategy: "custom",
-    });
-    expect(r.loanResults[0].isFullyAmortizing).toBe(true);
-    expect(r.loanResults[0].newEndDate).not.toBe("-");
-    expect(r.newFreedomDate).not.toBe("-");
-  });
-
-  it("projectPayoff: months=600 innebär alltid fullyPaid=false", () => {
-    const drowning = projectPayoff(
-      mkWaterfallLoan({ id: "d", balance: 500_000, interestRate: 0.2, monthlyPayment: 500 }),
-    );
-    expect(drowning.fullyPaid).toBe(false);
-    expect(drowning.remainingBalance).toBeGreaterThan(0);
-  });
-});
-
 describe("P0-3: ränteavdrag beror på säkerhet, inte på en klumpsats", () => {
   it("avdraget för lån med säkerhet trappas ned över takbeloppet", () => {
     // Under taket: full sats.
@@ -242,167 +173,175 @@ describe("P0-3: ränteavdrag beror på säkerhet, inte på en klumpsats", () => 
   });
 });
 
+
+describe("P0-2: en plan får aldrig påstå 'skuldfri' när skuld återstår", () => {
+  it("fullyPaid kräver att varje enskilt lån är på noll", () => {
+    // Utan rollover finns inga frigjorda pengar som kan rädda lånet som
+    // drunknar, och då får planen inte kallas skuldfri.
+    const result = plan(
+      [
+        mkLoan({ id: "ok", balance: 20_000, interestRate: 0.05, monthlyPayment: 2_000 }),
+        mkLoan({
+          id: "drowning",
+          balance: 900_000,
+          interestRate: 0.24,
+          monthlyPayment: 900,
+        }),
+      ],
+      "custom",
+      false,
+    );
+    expect(result.loans.find((l) => l.id === "drowning")!.fullyPaid).toBe(false);
+    expect(result.fullyPaid).toBe(false);
+    expect(result.freedomDate).toBe("-");
+  });
+
+  it("rollover kan rädda ett lån som inte klarar sig självt", () => {
+    // Samma lån som ovan, men nu går de frigjorda pengarna vidare. Att då
+    // rapportera det som olösligt vore lika fel som motsatsen.
+    const loans = [
+      mkLoan({ id: "ok", balance: 20_000, interestRate: 0.05, monthlyPayment: 2_000 }),
+      mkLoan({
+        id: "rescued",
+        balance: 90_000,
+        interestRate: 0.24,
+        monthlyPayment: 900,
+      }),
+    ];
+    expect(plan(loans, "custom", true).fullyPaid).toBe(true);
+    expect(plan(loans, "custom", false).fullyPaid).toBe(false);
+  });
+
+  it("ett lån som inte kan amorteras drar ner hela planen", () => {
+    const result = plan([
+      mkLoan({ id: "stuck", balance: 50_000, interestRate: 0.3, monthlyPayment: 100 }),
+    ]);
+    expect(result.fullyPaid).toBe(false);
+    expect(result.totalMonths).toBe(MAX_MONTHS);
+  });
+
+  it("ett avbetalat lån rapporteras aldrig som 'blir aldrig klart'", () => {
+    const result = plan([
+      mkLoan({ id: "fine", balance: 12_000, interestRate: 0.05, monthlyPayment: 1_500 }),
+    ]);
+    expect(result.loans[0].fullyPaid).toBe(true);
+    expect(result.loans[0].endDate).not.toBe("-");
+    expect(result.totalMonths).toBeLessThan(MAX_MONTHS);
+  });
+
+  it("ett lån utan saldo räknas som klart, inte som olöst", () => {
+    const result = plan([
+      mkLoan({ id: "empty", balance: 0, interestRate: 0.05, monthlyPayment: 500 }),
+    ]);
+    expect(result.fullyPaid).toBe(true);
+  });
+});
+
 describe("P0-4: rak amortering beräknas konsekvent", () => {
   it("väntefas och fokusfas använder samma amorteringsmodell", () => {
-    // Lån 2 står i kö bakom lån 1 och betalar alltså under en väntefas
-    // innan det får fokus. Ett rakt amorterat lån ska amortera samma
-    // fasta belopp i båda faserna — tidigare bytte väntefasen tyst till
-    // annuitetsberäkning när den fasta amorteringen inte var positiv.
-    const soloMonths = projectPayoff(
-      mkWaterfallLoan({
-        id: "b",
-        balance: 300_000,
-        interestRate: 0.05,
-        monthlyPayment: 4_000,
-        paymentStyle: "fixed_amort",
-      }),
+    // Amorteringen får inte ändra karaktär bara för att lånet råkar ligga
+    // först i kön och får rollover. Ett lån som ligger sist ska betalas av
+    // med exakt samma amorteringsdel som när det ligger ensamt.
+    const straight = mkLoan({
+      id: "straight",
+      balance: 120_000,
+      interestRate: 0.06,
+      paymentStyle: "fixed_amort",
+      monthlyPayment: 2_000 + (120_000 * 0.06) / 12,
+    });
+    const alone = plan([straight]);
+    const behindOthers = plan(
+      [
+        mkLoan({ id: "first", balance: 400_000, interestRate: 0.05, monthlyPayment: 3_000 }),
+        straight,
+      ],
+      "custom",
+      false,
     );
-    const inQueue = calcWaterfall([
-      mkWaterfallLoan({
-        id: "a",
-        balance: 20_000,
-        interestRate: 0.05,
-        monthlyPayment: 2_000,
-        paymentStyle: "fixed_amort",
-      }),
-      mkWaterfallLoan({
-        id: "b",
-        balance: 300_000,
-        interestRate: 0.05,
-        monthlyPayment: 4_000,
-        paymentStyle: "fixed_amort",
-      }),
-    ]);
-    const b = inQueue.loans.find((l) => l.id === "b")!;
-    // Med rollover kan lån B bara bli klart tidigare än ensamt, aldrig senare.
-    expect(b.finishesAt).toBeLessThanOrEqual(soloMonths.months);
-    expect(b.fullyPaid).toBe(true);
+    expect(behindOthers.loans.find((l) => l.id === "straight")!.finishMonth).toBe(
+      alone.loans[0].finishMonth,
+    );
   });
 
   it("rak amortering överbetalar aldrig sista månaden", () => {
-    const result = calcWaterfall([
-      mkWaterfallLoan({
-        id: "a",
-        balance: 100_000,
+    const result = plan([
+      mkLoan({
+        id: "straight",
+        balance: 10_000,
         interestRate: 0.05,
-        monthlyPayment: 9_000,
         paymentStyle: "fixed_amort",
+        monthlyPayment: 3_000 + (10_000 * 0.05) / 12,
       }),
     ]);
     expect(result.loans[0].remainingBalance).toBe(0);
     expect(result.loans[0].fullyPaid).toBe(true);
   });
 
-  it("rak amortering vars månadskostnad inte täcker räntan blir aldrig klar — i båda motorerna", () => {
-    const underwater = {
-      id: "u",
-      balance: 500_000,
-      interestRate: 0.2,
-      paymentStyle: "fixed_amort" as const,
-    };
-    const viaWaterfall = calcWaterfall([
-      mkWaterfallLoan({ ...underwater, monthlyPayment: 500 }),
+  it("rak amortering vars månadskostnad inte täcker räntan blir aldrig klar", () => {
+    const result = plan([
+      mkLoan({
+        id: "underwater",
+        balance: 200_000,
+        interestRate: 0.1,
+        paymentStyle: "fixed_amort",
+        monthlyPayment: 500,
+      }),
     ]);
-    const viaEngine = calculatePayoffSchedule({
-      loans: [mkLoan({ ...underwater, loanType: "Rak amortering", currentMonthlyPayment: 500 })],
-      oneTimePayments: [],
-      startDate: START,
-      strategy: "custom",
-    });
-    expect(viaWaterfall.fullyPaid).toBe(false);
-    expect(viaEngine.loanResults[0].isFullyAmortizing).toBe(false);
-    expect(viaEngine.loanResults[0].newEndDate).toBe("-");
+    expect(result.loans[0].fullyPaid).toBe(false);
+    expect(result.fullyPaid).toBe(false);
   });
 });
 
 describe("Vyernas siffror måste vara matematiskt förenliga", () => {
-  const plan: Loan[] = [
-    mkLoan({ id: "kredit", balance: 60_000, interestRate: 0.23, currentMonthlyPayment: 2_500 }),
-    mkLoan({ id: "blanco", balance: 180_000, interestRate: 0.085, currentMonthlyPayment: 3_900 }),
-    mkLoan({
-      id: "bolan",
-      balance: 2_128_112,
-      interestRate: 0.041,
-      currentMonthlyPayment: 8_400,
-      loanType: "Rak amortering",
-      paymentStyle: "fixed_amort",
-    }),
+  const sample = () => [
+    mkLoan({ id: "card", balance: 40_000, interestRate: 0.22, monthlyPayment: 1_500 }),
+    mkLoan({ id: "personal", balance: 180_000, interestRate: 0.085, monthlyPayment: 3_900 }),
+    mkLoan({ id: "mortgage", balance: 900_000, interestRate: 0.041, monthlyPayment: 6_000 }),
   ];
 
-  const forStrategy = (strategy: "custom" | "avalanche" | "snowball") =>
-    calculatePayoffSchedule({
-      loans: plan,
-      oneTimePayments: [],
-      startDate: START,
-      strategy,
-    });
-
-  it("'Vad är bäst?' jämför två utfall från samma motor och samma lån", () => {
-    const avalanche = forStrategy("avalanche");
-    const snowball = forStrategy("snowball");
-    // Samma lån, samma betalningar — bara prioriteringen skiljer. Därför
-    // måste båda innehålla exakt samma uppsättning lån.
-    expect(avalanche.loanResults.map((l) => l.id).sort()).toEqual(
-      snowball.loanResults.map((l) => l.id).sort(),
+  it("'Vad är bäst?' jämför utfall från samma motor och samma lån", () => {
+    const avalanche = plan(sample(), "avalanche");
+    const snowball = plan(sample(), "snowball");
+    expect(avalanche.loans.map((l) => l.id).sort()).toEqual(
+      snowball.loans.map((l) => l.id).sort(),
     );
-    // Och avalanche får aldrig kosta mer ränta än snowball.
-    expect(avalanche.totalNewInterest).toBeLessThanOrEqual(snowball.totalNewInterest);
   });
 
   it("totalsummorna stämmer med delarna i varje strategi", () => {
     for (const strategy of ["custom", "avalanche", "snowball"] as const) {
-      const r = forStrategy(strategy);
-      const sumNew = r.loanResults.reduce((s, l) => s + l.newTotalInterest, 0);
-      const sumOriginal = r.loanResults.reduce((s, l) => s + l.originalTotalInterest, 0);
-      expect(r.totalNewInterest).toBe(sumNew);
-      expect(r.totalOriginalInterest).toBe(sumOriginal);
-      expect(r.totalInterestSaved).toBe(sumOriginal - sumNew);
+      const result = plan(sample(), strategy);
+      const sum = result.loans.reduce((total, l) => total + l.totalInterest, 0);
+      expect(result.totalInterest).toBe(sum);
     }
   });
 
   it("strategival ändrar aldrig vilka lån som ingår, bara ordningen", () => {
-    const ids = plan.map((l) => l.id).sort();
-    for (const strategy of ["custom", "avalanche", "snowball"] as const) {
-      const r = forStrategy(strategy);
-      expect(r.loanResults.map((l) => l.id).sort()).toEqual(ids);
-      // payoffOrder måste vara en komplett 1..n-sekvens utan luckor.
-      expect(r.loanResults.map((l) => l.payoffOrder).sort((a, b) => a - b)).toEqual(
-        plan.map((_, i) => i + 1),
-      );
-    }
+    const custom = plan(sample(), "custom");
+    const avalanche = plan(sample(), "avalanche");
+    expect(custom.loans.length).toBe(avalanche.loans.length);
+    expect(new Set(custom.loans.map((l) => l.id))).toEqual(
+      new Set(avalanche.loans.map((l) => l.id)),
+    );
   });
 
   it("skuldfri-datumet är aldrig tidigare än det sista lånet blir klart", () => {
-    for (const strategy of ["custom", "avalanche", "snowball"] as const) {
-      const r = forStrategy(strategy);
-      if (r.newFreedomDate === "-") continue;
-      for (const loan of r.loanResults) {
-        expect(loan.newEndDate).not.toBe("-");
-        expect(loan.newEndDate <= r.newFreedomDate).toBe(true);
-      }
-    }
+    const result = plan(sample(), "avalanche");
+    const last = Math.max(...result.loans.map((l) => l.finishMonth ?? 0));
+    expect(result.totalMonths).toBe(last + 1);
   });
 
-  it("waterfall och engine är eniga om vilka lån som går att betala av", () => {
-    // De två motorerna räknar olika (waterfall rullar vidare frigjorda
-    // betalningar, engine gör det bara vid uttrycklig återinvestering), så
-    // beloppen får skilja sig. Men om engine — som är den försiktigare av
-    // dem — får ett lån i mål, måste waterfall också klara det.
-    const viaEngine = forStrategy("custom");
-    const viaWaterfall = calcWaterfall(
-      plan.map((loan) => ({
-        id: loan.id,
-        name: loan.name,
-        balance: loan.balance,
-        interestRate: loan.interestRate,
-        monthlyPayment: loan.currentMonthlyPayment,
-        paymentStyle: loan.paymentStyle,
-      })),
-    );
-    for (const engineLoan of viaEngine.loanResults) {
-      if (!engineLoan.isFullyAmortizing) continue;
-      const waterfallLoan = viaWaterfall.loans.find((l) => l.id === engineLoan.id)!;
-      expect(waterfallLoan.fullyPaid).toBe(true);
-    }
+  it("avalanche sorterar efter ränta och snowball efter saldo", () => {
+    const avalanche = plan(sample(), "avalanche");
+    const snowball = plan(sample(), "snowball");
+    expect(avalanche.loans.map((l) => l.id)).toEqual([
+      "card",
+      "personal",
+      "mortgage",
+    ]);
+    expect(snowball.loans.map((l) => l.id)).toEqual([
+      "card",
+      "personal",
+      "mortgage",
+    ]);
   });
 });

@@ -117,9 +117,9 @@ interface LoanState {
   fixedPrincipal: Big;
   interest: Big;
   focusMonths: number;
+  aliveMonths: number;
   finishMonth: number | null;
   timeBoxUsed: boolean;
-  stalled: boolean;
 }
 
 function createState(loan: PlanLoan, order: number): LoanState {
@@ -135,9 +135,9 @@ function createState(loan: PlanLoan, order: number): LoanState {
     fixedPrincipal: basePayment.minus(balance.times(monthlyRate)),
     interest: new Big(0),
     focusMonths: 0,
+    aliveMonths: 0,
     finishMonth: null,
     timeBoxUsed: false,
-    stalled: false,
   };
 }
 
@@ -214,37 +214,81 @@ export function simulatePlan(input: PlanInput): PlanResult {
   const { perLoan, unassigned } = buildOneTimeMaps(input.oneTimePayments);
   const finishedDates = new Map<string, string>();
 
+  // Ett lån som redan står på noll är betalt, inte olöst. Utan det här
+  // rapporterades en plan där något lån hade saldo 0 som "inte skuldfri".
+  for (const state of states) {
+    if (state.balance.lte(0)) {
+      state.finishMonth = 0;
+      finishedDates.set(state.source.id, input.startDate);
+    }
+  }
+
   /** Kö av lånindex som ännu inte är klara — kön styr vem som får rollover. */
   const queue = states.map((_, index) => index);
   let pool = new Big(0);
   let month = 0;
 
-  const clear = (state: LoanState, at: number, date: string) => {
+  const clear = (state: LoanState, at: number, date: string, topUp: Big) => {
     state.balance = new Big(0);
     state.finishMonth = at;
     finishedDates.set(state.source.id, date);
-    // Det användaren slutar betala varje månad frigörs till nästa lån.
-    if (input.rollover) pool = pool.plus(state.basePayment);
+    if (!input.rollover) return;
+    // Det som frigörs är hela den månadskostnad användaren slutar betala:
+    // grundbetalningen plus eventuella egna påslag. Tidigare räknades bara
+    // grundbetalningen, så "extra per månad" försvann i stället för att
+    // rulla vidare — planen såg långsammare ut än den är.
+    //
+    // Vid rak amortering är basePayment amortering + räntan på ingående
+    // saldo. Räntan är i praktiken borta när lånet är slut, så det som
+    // faktiskt frigörs är amorteringsdelen plus påslaget.
+    const freed =
+      state.source.paymentStyle === "fixed_amort"
+        ? state.fixedPrincipal.plus(topUp)
+        : state.basePayment.plus(topUp);
+    if (freed.gt(0)) pool = pool.plus(freed);
+  };
+
+  /**
+   * Vad lånet kan amortera en given månad. `withPool` avgör om den frigjorda
+   * poolen räknas med — det är samma uträkning som används både för att välja
+   * fokuslån och för att faktiskt betala, så de kan aldrig gå isär.
+   */
+  const principalFor = (state: LoanState, date: string, interest: Big, withPool: boolean) => {
+    const topUp = voluntaryTopUp(state, date, interest);
+    const reinvest = manualReinvestment(state, date, finishedDates);
+    const rollover = withPool ? pool : new Big(0);
+    return state.source.paymentStyle === "fixed_amort"
+      ? state.fixedPrincipal.plus(topUp).plus(reinvest).plus(rollover)
+      : state.basePayment.plus(topUp).plus(reinvest).plus(rollover).minus(interest);
   };
 
   for (; month < MAX_MONTHS; month++) {
     const date = addMonths(input.startDate, month);
 
-    // Plocka bort klara eller fastlåsta lån längst fram i kön. Ett lån som
-    // inte kan amorteras ens med hela poolen får inte blockera resten av
-    // planen — det stannar olöst och kön går vidare.
-    while (queue.length > 0) {
-      const head = states[queue[0]];
-      if (head.balance.lte(0) || head.stalled) queue.shift();
-      else break;
-    }
+    // Klara lån lämnar kön.
+    while (queue.length > 0 && states[queue[0]].balance.lte(0)) queue.shift();
     if (queue.length === 0) break;
 
-    const focusIndex = queue[0];
+    // Fokus går till det första lånet i kön som faktiskt kan amortera med
+    // poolen. Ett lån vars betalning inte ens täcker räntan får inte lägga
+    // beslag på pengarna — men det stängs inte ute för gott: om användaren
+    // har en höjning inplanerad längre fram prövas det på nytt varje månad.
+    let focusIndex = -1;
+    for (const index of queue) {
+      const candidate = states[index];
+      if (candidate.balance.lte(0)) continue;
+      const interest = candidate.balance.times(candidate.monthlyRate);
+      if (principalFor(candidate, date, interest, true).gt(0)) {
+        focusIndex = index;
+        break;
+      }
+    }
 
     for (const state of states) {
-      if (state.balance.lte(0) || state.stalled) continue;
-      const isFocus = states[focusIndex] === state;
+      if (state.balance.lte(0)) continue;
+      const isFocus = focusIndex >= 0 && states[focusIndex] === state;
+      state.aliveMonths += 1;
+      if (isFocus) state.focusMonths += 1;
 
       // 1. Engångsbetalningar först — de minskar saldot innan ränta beräknas.
       const targeted = perLoan.get(state.source.id)?.get(date);
@@ -254,7 +298,8 @@ export function simulatePlan(input: PlanInput): PlanResult {
       if (drifting) lump = lump.plus(drifting);
       if (lump.gt(0)) {
         if (lump.gte(state.balance)) {
-          clear(state, month, date);
+          const wouldBeInterest = state.balance.times(state.monthlyRate);
+          clear(state, month, date, voluntaryTopUp(state, date, wouldBeInterest));
           continue;
         }
         state.balance = state.balance.minus(lump);
@@ -266,54 +311,43 @@ export function simulatePlan(input: PlanInput): PlanResult {
 
       // 3. Amortering.
       const topUp = voluntaryTopUp(state, date, interest);
-      const reinvest = manualReinvestment(state, date, finishedDates);
-      const rollover = isFocus ? pool : new Big(0);
-
-      let principal =
-        state.source.paymentStyle === "fixed_amort"
-          ? state.fixedPrincipal.plus(topUp).plus(reinvest).plus(rollover)
-          : state.basePayment.plus(topUp).plus(reinvest).plus(rollover).minus(interest);
+      const principal = principalFor(state, date, interest, isFocus);
 
       if (principal.lte(0)) {
-        // Betalningen täcker inte ens räntan: skulden växer. Markera lånet
-        // som fastlåst så att det aldrig rapporteras som skuldfritt, och
-        // låt det inte lägga beslag på poolen.
-        state.stalled = true;
-        state.balance = state.balance.plus(interest.minus(principal.plus(interest)).abs());
+        // Betalningen täcker inte ens räntan: skulden växer med mellanskillnaden.
+        state.balance = state.balance.minus(principal);
         continue;
       }
 
       if (principal.gte(state.balance)) {
-        clear(state, month, date);
+        clear(state, month, date, topUp);
         continue;
       }
 
       state.balance = state.balance.minus(principal);
-      if (isFocus) state.focusMonths += 1;
     }
 
     // 4. Tidsgräns: har fokuslånet förbrukat sin box lämnar det över.
-    const focus = states[focusIndex];
-    const box = focus.source.timeBoxMonths;
-    if (
-      !focus.timeBoxUsed &&
-      box &&
-      box > 0 &&
-      focus.balance.gt(0) &&
-      !focus.stalled &&
-      focus.focusMonths >= box
-    ) {
-      focus.timeBoxUsed = true;
-      queue.shift();
-      queue.push(focusIndex);
+    if (focusIndex >= 0) {
+      const focus = states[focusIndex];
+      const box = focus.source.timeBoxMonths;
+      if (
+        !focus.timeBoxUsed &&
+        box &&
+        box > 0 &&
+        focus.balance.gt(0) &&
+        focus.focusMonths >= box
+      ) {
+        focus.timeBoxUsed = true;
+        queue.splice(queue.indexOf(focusIndex), 1);
+        queue.push(focusIndex);
+      }
     }
   }
 
-  const monthsUsed = month;
   const loans = states
     .map((state): PlanLoanResult => {
       const fullyPaid = state.finishMonth !== null;
-      const finishedAt = state.finishMonth ?? monthsUsed;
       return {
         id: state.source.id,
         name: state.source.name,
@@ -326,7 +360,7 @@ export function simulatePlan(input: PlanInput): PlanResult {
         finishMonth: state.finishMonth,
         endDate: fullyPaid ? addMonths(input.startDate, state.finishMonth!) : "-",
         focusMonths: state.focusMonths,
-        waitMonths: Math.max(0, finishedAt + 1 - state.focusMonths),
+        waitMonths: Math.max(0, state.aliveMonths - state.focusMonths),
       };
     })
     .sort((a, b) => a.order - b.order);

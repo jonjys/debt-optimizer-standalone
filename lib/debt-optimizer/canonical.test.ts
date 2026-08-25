@@ -207,6 +207,7 @@ describe("canonical motor", () => {
         startDate: "2024-01",
         oneTimePayments: [
           {
+            id: "otp-5000",
             loanId: "loan1",
             date: "2024-01",
             amount: 5000,
@@ -256,6 +257,7 @@ describe("canonical motor", () => {
         startDate: "2024-01",
         oneTimePayments: [
           {
+            id: "otp-5500",
             loanId: "loan1",
             date: "2024-01",
             amount: 5500,

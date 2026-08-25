@@ -1,15 +1,14 @@
 "use client";
 
-import { calculateBakeIn } from "@/lib/debt-optimizer/bake-in";
-import { calculatePayoffSchedule } from "@/lib/debt-optimizer/engine";
 import {
-  calcWaterfall,
-  type WaterfallLoan,
-  type WaterfallResult,
-} from "@/lib/debt-optimizer/waterfall";
+  bandLabel,
+  calculateBakeIn,
+  type BakeInResult,
+} from "@/lib/debt-optimizer/bake-in";
 import {
   simulatePlan,
-  type PlanInput,
+  type PlanLoan,
+  type PlanLoanResult,
   type PlanResult,
 } from "@/lib/debt-optimizer/canonical";
 import type {
@@ -163,6 +162,22 @@ const LOAN_KINDS: Record<
   },
 };
 
+/**
+ * Från 2026 är ränteavdraget slopat för lån utan säkerhet — blancolån,
+ * kreditkort och avbetalning. Bolån och andra lån med pant behåller avdraget.
+ * CSN-ränta har aldrig varit avdragsgill.
+ *
+ * Skillnaden är inte kosmetisk: med 30 % avdrag pålagt på ett kreditkort med
+ * 23 % ränta ser det ut som 16 %, och då kan appen råda någon att spara i
+ * stället för att betala av. Stäm av mot Skatteverket inför varje årsskifte.
+ */
+const DEDUCTIBLE_KINDS: ReadonlySet<LoanKind> = new Set<LoanKind>([
+  "mortgage",
+  "car",
+]);
+const isDeductible = (kind: LoanKind | undefined) =>
+  kind ? DEDUCTIBLE_KINDS.has(kind) : false;
+
 const DEFAULT_LEASING_TERMS: LeasingTerms = {
   company: "Toyota Corolla",
   monthlyCost: 4_039,
@@ -261,7 +276,9 @@ const COPY = {
     newDate: "Nytt skuldfri-datum",
     denied: "Banker nekar ofta över 85%",
   },
-} as const;
+};
+/** Alla texter finns på båda språken och har samma form. */
+type Copy = (typeof COPY)["sv"];
 
 const TAB_LABELS = {
   en: {
@@ -274,7 +291,7 @@ const TAB_LABELS = {
     compare: "Vad är bäst?",
     refinance: "Flytta till bolånet",
   },
-} as const;
+};
 // TAB_LABELS är sanningen för flikarnas namn — COPY.tabs speglar den.
 // (Tidigare kopierades bara `compare` över, så `today`/`refinance` i
 // TAB_LABELS var död kod och headern visade de gamla namnen.)
@@ -310,21 +327,70 @@ const initialLoans: Loan[] = [
 
 const number = (n: number, lang: Lang) =>
   Math.round(n).toLocaleString(lang === "sv" ? "sv-SE" : "en-US");
-const money = (n: number, lang: Lang, compact = false) =>
-  new Intl.NumberFormat(lang === "sv" ? "sv-SE" : "en-US", {
+const money = (n: number, lang: Lang, compact = false) => {
+  const safe = Number.isFinite(n) ? n : 0;
+  if (compact) {
+    const sign = safe < 0 ? "−" : "";
+    const abs = Math.abs(safe);
+    const decimal = lang === "sv" ? "," : ".";
+    if (abs >= 1_000_000)
+      return `${sign}${(abs / 1_000_000).toFixed(1).replace(".", decimal)} mkr`;
+    if (abs >= 10_000)
+      return `${sign}${number(Math.round(abs / 1000), lang)} tkr`;
+  }
+  return new Intl.NumberFormat(lang === "sv" ? "sv-SE" : "en-US", {
     style: "currency",
     currency: "SEK",
     maximumFractionDigits: 0,
-    notation: compact ? "compact" : "standard",
-  }).format(Number(n.toFixed(0)));
-const month = (ym: string, lang: Lang) => {
+  }).format(Math.round(safe));
+};
+// Ett ogiltigt datum får aldrig ta ner hela sidan. Intl.DateTimeFormat kastar
+// RangeError på Invalid Date, och eftersom skuldfri-datumet renderas i varje
+// vy räckte ett enda NaN för att ge vit skärm i stället för en tom siffra.
+const month = (ym: string | undefined | null, lang: Lang) => {
   if (!ym || ym === "-") return "—";
   const [y, m] = ym.split("-").map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return "—";
+  const date = new Date(y, m - 1);
+  if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat(lang === "sv" ? "sv-SE" : "en-US", {
     month: "short",
     year: "numeric",
-  }).format(new Date(y, m - 1));
+  }).format(date);
 };
+
+/**
+ * Vad som faktiskt frigörs varje månad när lånet är slut. Speglar `clear()` i
+ * canonical.ts: vid rak amortering försvinner räntedelen på vägen, så det som
+ * blir kvar att flytta vidare är amorteringen plus det egna påslaget.
+ */
+function freedMonthly(loan: Loan) {
+  const extra = loan.extraMonthlyEnabled === false ? 0 : loan.extraMonthly || 0;
+  if (loan.paymentStyle !== "fixed_amort")
+    return loan.currentMonthlyPayment + extra;
+  const interest = (loan.balance * loan.interestRate) / 12;
+  return Math.max(0, loan.currentMonthlyPayment - interest) + extra;
+}
+
+/** Hur lånet faktiskt betalas av, i klartext. */
+function describePace(loan: PlanLoanResult, lang: Lang) {
+  const sv = lang === "sv";
+  if (!loan.fullyPaid)
+    return sv
+      ? "Betalningen räcker inte — skulden blir kvar"
+      : "The payment is not enough — this debt remains";
+  if (loan.focusMonths === 0)
+    return sv
+      ? `${loan.waitMonths} mån med sin egen månadskostnad`
+      : `${loan.waitMonths} months on its own payment`;
+  if (loan.waitMonths === 0)
+    return sv
+      ? `${loan.focusMonths} mån med full kraft från start`
+      : `${loan.focusMonths} months at full force from the start`;
+  return sv
+    ? `${loan.waitMonths} mån med egen betalning, sedan ${loan.focusMonths} mån med full kraft`
+    : `${loan.waitMonths} months on its own, then ${loan.focusMonths} at full force`;
+}
 const duration = (n: number, lang: Lang) =>
   `${Math.floor(n / 12)}${lang === "sv" ? " år " : "y "}${n % 12}${lang === "sv" ? " mån" : "m"}`;
 const addMonths = (ym: string, count: number) => {
@@ -483,88 +549,77 @@ export default function Page() {
     () => loans.filter((loan) => loanKinds[loan.id] !== "leasing"),
     [loanKinds, loans],
   );
-  const waterfallLoans = useMemo<WaterfallLoan[]>(
+  /**
+   * Ett enda underlag för alla vyer. Tidigare byggde "Mina lån" sin plan med
+   * rollover påslaget och "Vad är bäst?" med rollover avslaget — samma lån gav
+   * då olika skuldfri-datum beroende på vilken flik man öppnade. Nu kommer
+   * varje siffra i appen ur samma lista och samma motor.
+   */
+  const planLoans = useMemo<PlanLoan[]>(
     () =>
-      debtLoans.map((loan) => ({
+      withReinvestments(debtLoans).map((loan) => ({
         id: loan.id,
         name: loan.name,
         balance: loan.balance,
         interestRate: loan.interestRate,
-        monthlyPayment:
-          loan.currentMonthlyPayment + (loan.extraMonthly || 0),
-        paymentStyle: loan.paymentStyle,
-        timeBoxMonths: timeBoxes[loan.id]?.enabled
-          ? timeBoxes[loan.id].months
-          : undefined,
-      })),
-    [debtLoans, timeBoxes],
-  );
-  const waterfall = useMemo(
-    () =>
-      simulatePlan({
-        loans: waterfallLoans,
-        strategy: "custom",
-        startDate: START,
-        oneTimePayments: [],
-        rollover: true,
-      }),
-    [waterfallLoans],
-  );
-  const avalancheWaterfall = useMemo(
-    () =>
-      simulatePlan({
-        loans: [...waterfallLoans]
-          .sort((a, b) => b.interestRate - a.interestRate)
-          .map((loan) => ({ ...loan, timeBoxMonths: undefined })),
-        strategy: "custom",
-        startDate: START,
-        oneTimePayments: [],
-        rollover: true,
-      }),
-    [waterfallLoans],
-  );
-  const calculate = useCallback(
-    (s: PayoffStrategy) => {
-      if (!debtLoans.length) return null;
-
-      // Map debtLoans to PlanLoan format
-      const planLoans = withReinvestments(debtLoans).map((loan) => ({
-        id: loan.id,
-        name: loan.name,
-        balance: loan.balance,
-        interestRate: loan.interestRate,
+        // Grundbetalning och eget påslag hålls isär: motorn lägger på det
+        // extra själv. Summeras de här räknas påslaget två gånger.
         monthlyPayment: loan.currentMonthlyPayment,
         paymentStyle: loan.paymentStyle,
         extraMonthly: loan.extraMonthly,
         extraMonthlyEnabled: loan.extraMonthlyEnabled,
         reinvestment: loan.reinvestment,
-      }));
-
-      // Use canonical motor: plan with strategy (rollover=false for conservative projection)
-      const plan = simulatePlan({
-        loans: planLoans,
-        strategy: s,
+        timeBoxMonths: timeBoxes[loan.id]?.enabled
+          ? timeBoxes[loan.id].months
+          : undefined,
+      })),
+    [debtLoans, timeBoxes, withReinvestments],
+  );
+  const runPlan = useCallback(
+    (order: PayoffStrategy) =>
+      simulatePlan({
+        // Tidsgränsen är en manuell prioritering och hör bara hemma i
+        // användarens egen ordning — inte i de räknade alternativen.
+        loans:
+          order === "custom"
+            ? planLoans
+            : planLoans.map((loan) => ({ ...loan, timeBoxMonths: undefined })),
+        strategy: order,
         startDate: START,
         oneTimePayments: [],
-        rollover: false,
-      });
-
-      // Baseline: same loans, no strategy applied (custom sort, no auto-transfer)
-      const baseline = simulatePlan({
-        loans: planLoans,
+        rollover: true,
+      }),
+    [planLoans],
+  );
+  const plan = useMemo(() => runPlan("custom"), [runPlan]);
+  const avalanchePlan = useMemo(() => runPlan("avalanche"), [runPlan]);
+  const snowballPlan = useMemo(() => runPlan("snowball"), [runPlan]);
+  /**
+   * Baslinjen är "om du inte gjorde någonting": varje lån betalas med sin egen
+   * grundbetalning, utan påslag, utan återinvestering och utan att frigjorda
+   * pengar rullar vidare. Det är den enda ärliga referensen för "sparad ränta".
+   */
+  const baseline = useMemo(
+    () =>
+      simulatePlan({
+        loans: planLoans.map((loan) => ({
+          ...loan,
+          extraMonthlyEnabled: false,
+          targetMonthlyEnabled: false,
+          reinvestment: undefined,
+          timeBoxMonths: undefined,
+        })),
         strategy: "custom",
         startDate: START,
         oneTimePayments: [],
         rollover: false,
-      });
-
-      return planResultToCalculationResult(plan, baseline);
-    },
-    [debtLoans, withReinvestments],
+      }),
+    [planLoans],
   );
-  const result = useMemo(() => calculate(strategy), [calculate, strategy]);
-  const avalanche = useMemo(() => calculate("avalanche"), [calculate]);
-  const snowball = useMemo(() => calculate("snowball"), [calculate]);
+  const result = useMemo(
+    () => (debtLoans.length ? planResultToCalculationResult(plan, baseline) : null),
+    [debtLoans.length, plan, baseline],
+  );
   const personalTotal = debtLoans
     .filter((x) => loanKinds[x.id] === "personal")
     .reduce((sum, x) => sum + x.balance, 0);
@@ -611,21 +666,10 @@ export default function Page() {
       refinancePersonal?.interestRate,
     ],
   );
-  const refinanceDate = addMonths(
-    START,
-    Math.min(
-      480,
-      Math.ceil(
-        bake.newMortgage /
-          Math.max(
-            1,
-            bake.amortKrAfter || loans[0]?.currentMonthlyPayment || 8400,
-          ),
-      ),
-    ),
-  );
   const total = debtLoans.reduce((sum, x) => sum + x.balance, 0);
-  const monthlyTotal = loans.reduce(
+  // Månadskostnaden gäller samma lån som skulden ovan. Leasing räknas inte in
+  // i någon av dem — det är en jämförelsepost, inte en skuld i planen.
+  const monthlyTotal = debtLoans.reduce(
     (sum, x) => sum + x.currentMonthlyPayment + (x.extraMonthly || 0),
     0,
   );
@@ -805,18 +849,19 @@ export default function Page() {
               setLeasingTerms={setLeasingTerms}
               timeBoxes={timeBoxes}
               setTimeBoxes={setTimeBoxes}
-              waterfall={waterfall}
-              avalancheWaterfall={avalancheWaterfall}
+              plan={plan}
+              avalanchePlan={avalanchePlan}
               onPdf={handlePdf}
             />
           )}
-          {tab === "compare" && avalanche && snowball && (
+          {tab === "compare" && (
             <BestView
               lang={lang}
               t={t}
-              cheapest={avalanche}
-              smallest={snowball}
-              loans={loans}
+              plan={plan}
+              avalanchePlan={avalanchePlan}
+              snowballPlan={snowballPlan}
+              loans={debtLoans}
               setLoans={setLoans}
             />
           )}
@@ -833,53 +878,27 @@ export default function Page() {
               setMortgageValue={setMortgageValue}
               personalTotal={personalTotal}
               setPersonalTotal={setPersonalTotal}
-              refinanceDate={refinanceDate}
-              baselineMonths={waterfall.totalMonths}
             />
           )}
-          <div className="fixed inset-x-3 bottom-3 z-50 grid grid-cols-3 rounded-2xl border border-white/10 bg-[#101015]/95 p-2 shadow-2xl backdrop-blur-xl md:hidden">
-            <Mini
-              label={t.free}
-              value={month(
-                waterfall.fullyPaid && waterfall.totalMonths > 0
-                  ? addMonths(START, waterfall.totalMonths - 1)
-                  : "-",
-                lang,
-              )}
-            />
-            <Mini
-              label={
-                debtLoans.length <= 1
-                  ? lang === "sv"
-                    ? "Total ränta"
-                    : "Total interest"
-                  : t.saved
-              }
-              value={money(
-                waterfall.totalInterest,
-                lang,
-                true,
-              )}
-            />
-            <button
-              onClick={addDebt}
-              className="grid place-items-center rounded-xl bg-blue-500 text-xs font-semibold"
-            >
-              <Plus size={16} />
-              {t.add}
-            </button>
-          </div>
+          <MobileBar
+            lang={lang}
+            t={t}
+            tab={tab}
+            setTab={setTab}
+            plan={plan}
+            hasDebts={debtLoans.length > 0}
+          />
         </div>
       )}
       {toast && (
         <div
           role="status"
-          className="fixed bottom-6 left-1/2 z-[70] -translate-x-1/2 rounded-full border border-emerald-400/20 bg-emerald-500/15 px-5 py-3 text-sm font-medium text-emerald-300 shadow-2xl backdrop-blur-xl"
+          className="fixed bottom-28 left-1/2 z-[70] w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 rounded-2xl border border-emerald-400/20 bg-emerald-500/15 px-5 py-3 text-center text-sm font-medium text-emerald-300 shadow-2xl backdrop-blur-xl md:bottom-6 md:w-auto"
         >
           {toast}
         </div>
       )}
-      <footer className="mx-auto max-w-[1280px] px-5 py-8 text-center text-[12px] text-white/55">
+      <footer className="mx-auto max-w-[1280px] px-5 pb-28 pt-8 text-center text-[12px] text-white/55 md:pb-8">
         <p>
           {lang === "sv"
             ? "All matematik körs i din webbläsare. Ingen spårning. Ingen kostnad. Byggd med Big.js. 🇸🇪"
@@ -944,221 +963,40 @@ function Header({
   );
 }
 
-function Today(p: any) {
-  const {
-    lang,
-    loans,
-    setLoans,
-    t,
-    result,
-    strategy,
-    setStrategy,
-    reinvestments,
-    setRule,
-    updateRuleAmount,
-    updateLoan,
-    total,
-    monthlyTotal,
-    addDebt,
-  } = p;
-  return (
-    <main className="mx-auto grid max-w-[1480px] gap-6 px-5 py-10 pb-28 md:px-10 lg:grid-cols-[1fr_390px]">
-      <section>
-        <Title
-          eyebrow={t.tabs.today}
-          title={t.plan}
-          sub={t.hint}
-          action={
-            <button onClick={addDebt} className="button">
-              <Plus size={14} />
-              {t.add}
-            </button>
-          }
-        />
-        <div className="mb-4 grid grid-cols-2 gap-3">
-          <Stat label={t.total} value={money(total, lang)} />
-          <Stat label={t.monthly} value={money(monthlyTotal, lang)} />
-        </div>
-        <div className="space-y-3">
-          {loans.map((loan: Loan, i: number) => {
-            const rule = reinvestments.find(
-              (r: Reinvestment) => r.fromLoanId === loan.id,
-            );
-            const payoff = result?.loanResults.find(
-              (r: any) => r.id === loan.id,
-            );
-            return (
-              <article key={loan.id} className="card group p-6">
-                <div className="mb-5 flex justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-500/10 text-blue-400">
-                      {i ? <WalletCards size={18} /> : <Landmark size={18} />}
-                    </span>
-                    <input
-                      value={loan.name}
-                      onChange={(e) =>
-                        setLoans((a: Loan[]) =>
-                          a.map((x) =>
-                            x.id === loan.id
-                              ? { ...x, name: e.target.value }
-                              : x,
-                          ),
-                        )
-                      }
-                      className="bg-transparent font-semibold outline-none"
-                    />
-                  </div>
-                  <button
-                    onClick={() =>
-                      setLoans((a: Loan[]) => a.filter((x) => x.id !== loan.id))
-                    }
-                  >
-                    <X size={15} className="text-white/55" />
-                  </button>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <Field
-                    label={t.balance}
-                    value={number(loan.balance, lang)}
-                    onChange={(v) => updateLoan(loan.id, "balance", v)}
-                  />
-                  <Field
-                    label={t.rate}
-                    value={Number(loan.interestRate * 100).toFixed(1)}
-                    suffix="%"
-                    decimal
-                    onChange={(v) =>
-                      updateLoan(loan.id, "interestRate", v / 100)
-                    }
-                  />
-                  <Field
-                    label={t.payment}
-                    value={number(loan.currentMonthlyPayment, lang)}
-                    onChange={(v) =>
-                      updateLoan(loan.id, "currentMonthlyPayment", v)
-                    }
-                  />
-                  <Field
-                    label={t.extra}
-                    value={number(loan.extraMonthly || 0, lang)}
-                    onChange={(v) => updateLoan(loan.id, "extraMonthly", v)}
-                  />
-                </div>
-                <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-white/[.05] bg-black/10 p-4 md:flex-row md:items-end">
-                  <label className="flex-1 text-[12px] text-white/65">
-                    {t.when} <b className="text-white/65">{loan.name}</b>{" "}
-                    {month(payoff?.newEndDate || "-", lang)} {t.paid}
-                    <select
-                      value={rule?.toLoanId || ""}
-                      onChange={(e) => setRule(loan, e.target.value)}
-                      className="mt-2 w-full rounded-xl border border-white/[.07] bg-[#17171d] p-3 text-sm text-white outline-none"
-                    >
-                      <option value="">{t.none}</option>
-                      {loans
-                        .filter((x: Loan) => x.id !== loan.id)
-                        .map((x: Loan) => (
-                          <option key={x.id} value={x.id}>
-                            {lang === "sv" ? "Lägg till " : "Add to "}
-                            {x.name}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-                  {rule && (
-                    <label className="w-full text-[12px] text-white/65 md:w-48">
-                      {t.amount}
-                      <div className="mt-2 flex items-center rounded-xl border border-white/[.07] bg-[#17171d] px-3">
-                        <input
-                          type="number"
-                          value={rule.amount.toFixed(0)}
-                          onChange={(e) =>
-                            updateRuleAmount(loan.id, Number(e.target.value))
-                          }
-                          className="w-full bg-transparent py-3 text-sm text-white outline-none"
-                        />
-                        <span>SEK</span>
-                      </div>
-                    </label>
-                  )}
-                </div>
-              </article>
-            );
-          })}
-        </div>
-        <div className="mt-5 flex flex-wrap gap-2">
-          {(["avalanche", "snowball", "custom"] as PayoffStrategy[]).map(
-            (x) => (
-              <button
-                key={x}
-                onClick={() => setStrategy(x)}
-                className={`pill capitalize ${strategy === x ? "active" : ""}`}
-              >
-                {x}
-              </button>
-            ),
-          )}
-          <button
-            onClick={() => setLoans([])}
-            className="ml-auto flex gap-2 p-2 text-xs text-white/55"
-          >
-            <RefreshCw size={13} />
-            {t.reset}
-          </button>
-        </div>
-      </section>
-      <ResultSidebar
-        lang={lang}
-        t={t}
-        result={result}
-        loans={loans}
-        reinvestments={reinvestments}
-      />
-    </main>
-  );
-}
 
 function ResultSidebar({
   lang,
   t,
-  result,
   loans,
   reinvestments = [],
-  waterfall,
-  avalancheWaterfall,
+  plan,
+  avalanchePlan,
   monthlyTotal,
-}: any) {
-  const usesWaterfall = Boolean(waterfall);
+}: {
+  lang: Lang;
+  t: Copy;
+  loans: Loan[];
+  reinvestments?: Reinvestment[];
+  plan: PlanResult;
+  avalanchePlan: PlanResult;
+  monthlyTotal?: number;
+}) {
+  const sv = lang === "sv";
   const hasDebts = loans.length > 0;
-  const singleLoan = loans.length === 1;
-  const customDate =
-    waterfall?.fullyPaid && waterfall.totalMonths > 0
-      ? addMonths(START, waterfall.totalMonths - 1)
-      : "-";
-  const avalancheDate =
-    avalancheWaterfall?.fullyPaid && avalancheWaterfall.totalMonths > 0
-      ? addMonths(START, avalancheWaterfall.totalMonths - 1)
-      : "-";
-  const freedomDate = usesWaterfall ? customDate : result?.newFreedomDate || "-";
-  const payoffMonths = usesWaterfall
-    ? waterfall.totalMonths
-    : monthsFromStart(result?.newFreedomDate);
-  const monthsSaved = usesWaterfall
-    ? Math.max(0, waterfall.totalMonths - (avalancheWaterfall?.totalMonths || 0))
-    : result?.totalMonthsSaved || 0;
-  const interestValue = usesWaterfall
-    ? waterfall.totalInterest
-    : singleLoan
-      ? result?.totalNewInterest || 0
-      : Math.max(0, result?.totalInterestSaved || 0);
-  const interestSavedByAvalanche = usesWaterfall
-    ? Math.max(
-        0,
-        waterfall.totalInterest - (avalancheWaterfall?.totalInterest || 0),
-      )
-    : 0;
-  const payoffRows = usesWaterfall
-    ? waterfall.loans
-    : result?.loanResults || [];
+  const freedomDate = plan.fullyPaid ? plan.freedomDate : "-";
+  const payoffMonths = plan.fullyPaid ? plan.totalMonths : 0;
+  // Hur mycket den billigaste ordningen skulle spara jämfört med den ordning
+  // användaren själv har satt. Båda körs med samma motor och samma pengar —
+  // det enda som skiljer är i vilken ordning lånen får full kraft.
+  const monthsSaved =
+    plan.fullyPaid && avalanchePlan.fullyPaid
+      ? Math.max(0, plan.totalMonths - avalanchePlan.totalMonths)
+      : 0;
+  const interestSavedByAvalanche = Math.max(
+    0,
+    plan.totalInterest - avalanchePlan.totalInterest,
+  );
+  const canCompareOrder = loans.length > 1;
   return (
     <aside className="space-y-3">
       <div className="relative min-h-[120px] overflow-hidden rounded-xl border border-blue-400/20 bg-blue-500/[.09] p-4 shadow-[inset_0_0_45px_rgba(59,130,246,.08)] backdrop-blur-xl">
@@ -1170,80 +1008,78 @@ function ResultSidebar({
           {month(freedomDate, lang)}
         </div>
         {freedomDate === "-" ? (
-          <span className={`mt-4 inline-flex rounded-full px-3 py-1.5 text-xs font-semibold ${hasDebts ? "bg-red-400/10 text-red-300" : "bg-white/[.06] text-white/65"}`}>
+          <span
+            className={`mt-4 inline-flex rounded-full px-3 py-1.5 text-xs font-semibold ${hasDebts ? "bg-red-400/10 text-red-300" : "bg-white/[.06] text-white/65"}`}
+          >
             {hasDebts
-              ? lang === "sv"
+              ? sv
                 ? "Betalningen är för låg"
                 : "Payment is too low"
-              : lang === "sv"
+              : sv
                 ? "Lägg till ett lån"
                 : "Add a debt"}
           </span>
-        ) : payoffMonths > 0 ? (
+        ) : (
           <span className="mt-4 inline-flex rounded-full bg-blue-400/10 px-3 py-1.5 text-xs font-semibold text-blue-200">
-            {duration(payoffMonths, lang)} {lang === "sv" ? "till skuldfri" : "to debt-free"}
+            {duration(payoffMonths, lang)}{" "}
+            {sv ? "till skuldfri" : "to debt-free"}
           </span>
-        ) : monthsSaved > 0 ? (
-          <span className="mt-4 inline-flex rounded-full bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
-            {duration(monthsSaved, lang)} {t.earlier}
-          </span>
-        ) : null}
+        )}
       </div>
       <div className="card p-6">
         <span className="text-sm text-white/65">
-          {usesWaterfall || singleLoan
-            ? lang === "sv"
-              ? "Total ränta"
-              : "Total interest"
-            : t.saved}
+          {sv ? "Total ränta" : "Total interest"}
         </span>
         <div className="mt-4 text-4xl font-semibold">
-          <CountUp value={interestValue} lang={lang} />
+          <CountUp value={plan.totalInterest} lang={lang} />
         </div>
         {typeof monthlyTotal === "number" ? (
           <p className="mt-3 text-xs text-white/65">
-            {lang === "sv" ? "Total månadskostnad" : "Total monthly outflow"}: {money(monthlyTotal, lang)}
+            {sv ? "Total månadskostnad" : "Total monthly outflow"}:{" "}
+            {money(monthlyTotal, lang)}
           </p>
         ) : null}
       </div>
-      {usesWaterfall && avalancheWaterfall ? (
+      {canCompareOrder ? (
         <div className="card p-5">
           <div className="mb-3 text-xs font-semibold uppercase tracking-[.14em] text-white/65">
-            {lang === "sv"
+            {sv
               ? "Din ordning vs billigaste vägen"
               : "Your order vs the cheapest route"}
           </div>
           <div className="space-y-3 text-xs">
             <div className="rounded-xl border border-blue-400/15 bg-blue-500/[.06] p-3">
               <div className="flex items-center justify-between gap-3">
-                <b>{lang === "sv" ? "Din ordning" : "Your order"}</b>
-                <span>{month(customDate, lang)}</span>
+                <b>{sv ? "Din ordning" : "Your order"}</b>
+                <span>{plan.fullyPaid ? month(plan.freedomDate, lang) : "—"}</span>
               </div>
               <p className="mt-1 text-white/65">
-                {lang === "sv" ? "Ränta" : "Interest"} {money(waterfall.totalInterest, lang)}
+                {sv ? "Ränta" : "Interest"} {money(plan.totalInterest, lang)}
               </p>
             </div>
             <div className="rounded-xl border border-emerald-400/15 bg-emerald-500/[.06] p-3">
               <div className="flex items-center justify-between gap-3">
-                <b>
-                  {lang === "sv" ? "Billigaste vägen" : "Cheapest route"}
-                </b>
-                <span>{month(avalancheDate, lang)}</span>
+                <b>{sv ? "Billigaste vägen" : "Cheapest route"}</b>
+                <span>
+                  {avalanchePlan.fullyPaid
+                    ? month(avalanchePlan.freedomDate, lang)
+                    : "—"}
+                </span>
               </div>
               <p className="mt-1 text-white/65">
-                {lang === "sv"
+                {sv
                   ? "Högsta räntan först · Ränta"
                   : "Highest rate first · Interest"}{" "}
-                {money(avalancheWaterfall.totalInterest, lang)}
+                {money(avalanchePlan.totalInterest, lang)}
               </p>
               <p className="mt-2 font-medium text-emerald-300">
                 {interestSavedByAvalanche > 0
-                  ? `${lang === "sv" ? "Sparar" : "Saves"} ${money(interestSavedByAvalanche, lang)}`
-                  : lang === "sv"
+                  ? `${sv ? "Sparar" : "Saves"} ${money(interestSavedByAvalanche, lang)}`
+                  : sv
                     ? "Din ordning är redan lika billig"
                     : "Your order is already just as inexpensive"}
                 {monthsSaved > 0
-                  ? ` · ${duration(monthsSaved, lang)} ${lang === "sv" ? "snabbare" : "faster"}`
+                  ? ` · ${duration(monthsSaved, lang)} ${sv ? "snabbare" : "faster"}`
                   : ""}
               </p>
             </div>
@@ -1252,38 +1088,38 @@ function ResultSidebar({
       ) : null}
       <div className="card p-5">
         <div className="mb-2 text-xs text-white/65">{t.payoff}</div>
-        {payoffRows.map((x: any, index: number) => (
+        {plan.loans.map((x) => (
           <div
             key={x.id}
             className="border-b border-white/[.05] py-3 last:border-0"
           >
             <div className="flex items-center gap-3">
-              <span className="grid h-6 w-6 place-items-center rounded-full bg-white/5 text-xs">
-                {x.payoffOrder || index + 1}
+              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/5 text-xs">
+                {x.order}
               </span>
-              <span className="flex-1 text-xs">{x.name}</span>
-              <span className={x.fullyPaid === false ? "text-xs text-orange-300" : "text-xs text-emerald-400"}>
-                {x.fullyPaid === false ? null : <Check size={12} className="inline" />} {" "}
-                {usesWaterfall
-                  ? x.fullyPaid
-                    ? month(addMonths(START, x.finishesAt - 1), lang)
-                    : lang === "sv"
-                      ? "Över 50 år"
-                      : "Over 50 years"
-                  : month(x.newEndDate, lang)}
+              <span className="flex-1 truncate text-xs">{x.name}</span>
+              <span
+                className={
+                  x.fullyPaid
+                    ? "shrink-0 text-xs text-emerald-400"
+                    : "shrink-0 text-xs text-orange-300"
+                }
+              >
+                {x.fullyPaid ? (
+                  <>
+                    <Check size={12} className="inline" />{" "}
+                    {month(x.endDate, lang)}
+                  </>
+                ) : sv ? (
+                  "Över 50 år"
+                ) : (
+                  "Over 50 years"
+                )}
               </span>
             </div>
-            {usesWaterfall ? (
-              <div className="ml-9 mt-1 text-[12px] text-white/55">
-                {x.isAnchor
-                  ? lang === "sv"
-                    ? `${x.independentMonths} mån · betalas av för sig`
-                    : `${x.independentMonths} months · paid off on its own`
-                  : lang === "sv"
-                    ? `${x.waitMonths} mån väntan + ${x.focusMonths} mån fokus`
-                    : `${x.waitMonths} months waiting + ${x.focusMonths} months focused`}
-              </div>
-            ) : null}
+            <div className="ml-9 mt-1 text-[12px] text-white/55">
+              {describePace(x, lang)}
+            </div>
             {reinvestments
               .filter(
                 (r: Reinvestment) =>
@@ -1308,298 +1144,7 @@ function ResultSidebar({
   );
 }
 
-function Compare({
-  lang,
-  t,
-  avalanche,
-  snowball,
-}: {
-  lang: Lang;
-  t: any;
-  avalanche: CalculationResult;
-  snowball: CalculationResult;
-}) {
-  const diff = Math.abs(avalanche.totalNewInterest - snowball.totalNewInterest),
-    winner =
-      avalanche.totalNewInterest <= snowball.totalNewInterest
-        ? "Avalanche"
-        : "Snowball";
-  return (
-    <main className="mx-auto max-w-[1320px] px-5 py-10 pb-28 md:px-10">
-      <Title
-        eyebrow={t.tabs.compare}
-        title={t.compareTitle}
-        sub={t.compareSub}
-      />
-      <div className="mb-5 flex justify-center">
-        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-5 py-2 text-sm font-semibold text-emerald-300">
-          {winner} {t.winner} {money(diff, lang)}
-        </span>
-      </div>
-      <div className="grid gap-5 lg:grid-cols-2">
-        <StrategyCard
-          name="Avalanche"
-          note="Highest rate first"
-          color="#3B82F6"
-          result={avalanche}
-          lang={lang}
-          t={t}
-        />
-        <StrategyCard
-          name="Snowball"
-          note="Lowest balance first"
-          color="#F97316"
-          result={snowball}
-          lang={lang}
-          t={t}
-        />
-      </div>
-      <div className="card mt-5 p-6">
-        <div className="mb-5 text-sm font-medium">Payoff timeline</div>
-        <svg
-          viewBox="0 0 900 220"
-          className="h-auto w-full"
-          role="img"
-          aria-label="Payoff curves"
-        >
-          <defs>
-            <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
-              <stop stopColor="#3B82F6" stopOpacity=".25" />
-              <stop offset="1" stopColor="#3B82F6" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          {[40, 90, 140, 190].map((y) => (
-            <line
-              key={y}
-              x1="20"
-              x2="880"
-              y1={y}
-              y2={y}
-              stroke="white"
-              strokeOpacity=".06"
-            />
-          ))}
-          <path
-            d="M20 25 C210 35 330 60 450 95 S700 170 880 195 L880 210 L20 210Z"
-            fill="url(#area)"
-          />
-          <path
-            d="M20 25 C210 35 330 60 450 95 S700 170 880 195"
-            fill="none"
-            stroke="#3B82F6"
-            strokeWidth="4"
-          />
-          <path
-            d="M20 25 C180 48 340 70 500 115 S740 175 880 195"
-            fill="none"
-            stroke="#F97316"
-            strokeWidth="3"
-            strokeDasharray="8 8"
-          />
-        </svg>
-      </div>
-    </main>
-  );
-}
-function StrategyCard({ name, note, color, result, lang, t }: any) {
-  const pct = Math.max(15, Math.min(92, 100 - result.totalMonthsSaved / 3));
-  return (
-    <div className="card p-7" style={{ boxShadow: `inset 0 1px 0 ${color}33` }}>
-      <div className="flex justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">{name}</h2>
-          <p className="text-xs text-white/65">{note}</p>
-        </div>
-        <span
-          className="rounded-full px-3 py-1 text-xs"
-          style={{ background: `${color}18`, color }}
-        >
-          {result.totalMonthsSaved} {t.months} saved
-        </span>
-      </div>
-      <div
-        className="mx-auto my-8 grid h-[200px] w-[200px] place-items-center rounded-full p-7"
-        style={{
-          background: `conic-gradient(${color} 0 ${pct}%,rgba(255,255,255,.06) ${pct}% 100%)`,
-        }}
-      >
-        <div className="grid h-full w-full place-items-center rounded-full bg-[#101015] text-center">
-          <div>
-            <small className="text-white/55">{t.free}</small>
-            <b className="mt-1 block text-xl">
-              {month(result.newFreedomDate, lang)}
-            </b>
-          </div>
-        </div>
-      </div>
-      <div className="grid grid-cols-3 gap-2">
-        <Stat
-          label={t.months}
-          value={String(
-            result.loanResults.reduce(
-              (m: number, x: any) => Math.max(m, x.monthsSaved),
-              0,
-            ),
-          )}
-        />
-        <Stat
-          label={t.totalInterest}
-          value={money(result.totalNewInterest, lang, true)}
-        />
-        <Stat
-          label={t.saved}
-          value={money(result.totalInterestSaved, lang, true)}
-        />
-      </div>
-    </div>
-  );
-}
 
-function Refinance({
-  lang,
-  t,
-  bake,
-  bakePct,
-  setBakePct,
-  propertyValue,
-  setPropertyValue,
-  mortgageValue,
-  setMortgageValue,
-  personalTotal,
-  refinanceDate,
-}: any) {
-  const [scenario, setScenario] = useState<"samePayoff" | "minimumBolån">("samePayoff");
-  const color =
-    bake.ltvAfter < 0.7
-      ? "#22C55E"
-      : bake.ltvAfter <= 0.85
-        ? "#EAB308"
-        : "#EF4444";
-  const currentScenario = bake.scenarios[scenario];
-  return (
-    <main className="mx-auto max-w-[1120px] px-5 py-10 pb-28 md:px-10">
-      <Title
-        eyebrow={t.tabs.refinance}
-        title={t.refinanceTitle}
-        sub={t.refinanceSub}
-      />
-      <div className="grid gap-5 lg:grid-cols-[1.1fr_.9fr]">
-        <div className="card p-7">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <Field
-              label={t.property}
-              value={number(propertyValue, lang)}
-              onChange={setPropertyValue}
-            />
-            <Field
-              label={t.mortgage}
-              value={number(mortgageValue, lang)}
-              onChange={setMortgageValue}
-            />
-            <Field
-              label={t.personal}
-              value={number(personalTotal, lang)}
-              onChange={() => {}}
-              readOnly
-            />
-          </div>
-          <div className="mt-10">
-            <div className="mb-4 flex justify-between">
-              <span className="text-sm text-white/65">{t.baked}</span>
-              <b>{money(bake.bake, lang)}</b>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={bakePct}
-              onChange={(e) => setBakePct(Number(e.target.value))}
-              className="h-3 w-full cursor-pointer appearance-none rounded-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 accent-white"
-            />
-            <div className="mt-3 flex justify-between text-xs text-white/55">
-              <span>0%</span>
-              <span>{bakePct}%</span>
-              <span>100%</span>
-            </div>
-          </div>
-          <div className="mt-9 rounded-[20px] border border-white/[.06] bg-black/15 p-6">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-white/65">{t.newLtv}</span>
-              <b className="text-4xl" style={{ color }}>
-                {(bake.ltvAfter * 100).toFixed(1)}%
-              </b>
-            </div>
-            <div className="mt-5 h-2 rounded-full bg-white/5">
-              <div
-                className="h-full rounded-full transition-all"
-                style={{
-                  width: `${Math.min(bake.ltvAfter * 100, 100)}%`,
-                  background: color,
-                  boxShadow: `0 0 18px ${color}77`,
-                }}
-              />
-            </div>
-          </div>
-          {bake.warningLtv && (
-            <div className="mt-5 flex items-center gap-3 rounded-[20px] border border-red-500/35 bg-red-500/10 p-4 text-sm text-red-300">
-              <ShieldAlert size={19} />
-              {t.denied}
-            </div>
-          )}
-        </div>
-        <div className="space-y-4">
-          <div className="card p-6">
-            <div className="mb-4 flex gap-2">
-              {["samePayoff", "minimumBolån"].map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setScenario(s as typeof scenario)}
-                  className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-all ${
-                    scenario === s
-                      ? "bg-white/20 text-white"
-                      : "bg-white/5 text-white/65 hover:bg-white/10"
-                  }`}
-                >
-                  {s === "samePayoff" ? "Samma kostnad" : "Minimalt bolåne"}
-                </button>
-              ))}
-            </div>
-            <span className="text-sm text-white/65">Månadskostnad</span>
-            <div className="mt-3 text-4xl font-semibold">
-              {money(currentScenario.monthlyPayment, lang)}
-            </div>
-            {currentScenario.monthlyDelta !== 0 && (
-              <div
-                className={`mt-2 text-xs ${currentScenario.monthlyDelta <= 0 ? "text-emerald-400" : "text-orange-400"}`}
-              >
-                {currentScenario.monthlyDelta <= 0 ? "−" : "+"}
-                {money(Math.abs(currentScenario.monthlyDelta), lang)} / månad
-              </div>
-            )}
-          </div>
-          <div className="card p-6">
-            <span className="text-sm text-white/65">Skuldfritt</span>
-            <div className="mt-3 text-4xl font-semibold">
-              {currentScenario.expectedDebtFreeDate === "-" ? "-" : month(currentScenario.expectedDebtFreeDate, lang)}
-            </div>
-            <p className="mt-3 text-xs text-white/55">
-              {currentScenario.expectedMonths} månader
-            </p>
-          </div>
-          <div className="card p-6">
-            <span className="text-sm text-white/65">Räntesparad</span>
-            <div className="mt-3 text-4xl font-semibold text-emerald-300">
-              <CountUp value={Math.max(0, currentScenario.interestSavedNet)} lang={lang} />
-            </div>
-            <p className="mt-3 text-xs leading-5 text-white/55">
-              {currentScenario.description}
-            </p>
-          </div>
-        </div>
-      </div>
-    </main>
-  );
-}
 
 function Landing({
   lang,
@@ -1615,45 +1160,42 @@ function Landing({
     <main className="relative mx-auto flex min-h-[60vh] max-w-[1180px] items-center justify-center overflow-hidden px-5 py-20 text-center md:min-h-[680px] md:px-10">
       <div className="pointer-events-none absolute left-1/2 top-[44%] h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gradient-to-br from-blue-500/20 via-violet-500/10 to-emerald-400/15 blur-[60px]" />
       <div className="relative z-10 flex flex-col items-center">
-        <div className="mb-8 inline-flex h-7 items-center gap-2 rounded-full border border-white/[.08] bg-white/[.06] px-4 text-[12px] tracking-[.5px] text-white/55">
-          <LockKeyhole size={12} />
+        <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-white/[.08] bg-white/[.06] px-4 py-1.5 text-[12px] tracking-[.4px] text-white/55">
+          <LockKeyhole size={12} className="shrink-0" />
           {sv
-            ? "Ingen registrering · 100% privat · Fungerar offline · Matematik i webbläsaren"
-            : "No signup · 100% private · Works offline · Math in browser"}
+            ? "Ingen registrering · Helt privat · Fungerar offline"
+            : "No signup · Fully private · Works offline"}
         </div>
-        <h1 className="max-w-[760px] text-[36px] font-bold leading-[1.06] tracking-[-.05em] md:text-[56px] md:leading-[64px]">
-          {sv
-            ? "Skulder som kostar förmögenhet — "
-            : "Debts that cost a fortune — "}
+        <h1 className="max-w-[760px] text-[34px] font-bold leading-[1.08] tracking-[-.045em] sm:text-[42px] md:text-[56px] md:leading-[1.05]">
+          {sv ? "Se exakt när dina skulder är " : "See exactly when your debts are "}
           <span className="relative inline-block -rotate-1 rounded-[12px] bg-gradient-to-r from-[#3B82F6] to-[#10B981] px-3 py-0 text-white shadow-[0_14px_40px_rgba(16,185,129,.15)]">
             {sv ? "borta" : "gone"}
           </span>
-          {sv ? " på 4 år" : " in 4 years"}
         </h1>
-        <p className="mt-7 max-w-[640px] text-[18px] leading-8 text-white/60">
+        <p className="mt-6 max-w-[640px] text-[17px] leading-7 text-white/60 md:mt-7 md:text-[18px] md:leading-8">
           {sv
-            ? "Vilket lån som helst. Vilken ränta som helst. Välj din väg och återinvestera det du frigör. Allt stannar i din webbläsare."
-            : "Any loan. Any rate. Choose your path and reinvest what you free up. Everything stays in your browser."}
+            ? "Dina siffror, din ordning, ditt datum. Vilket lån som helst och vilken ränta som helst — allt räknas ut i din webbläsare."
+            : "Your numbers, your order, your date. Any loan at any rate — all calculated in your browser."}
         </p>
-        <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
+        <div className="mt-8 flex w-full flex-col justify-center gap-3 sm:w-auto sm:flex-row">
           <button
             onClick={onStart}
-            className="inline-flex h-14 w-full items-center justify-center rounded-xl bg-white px-7 text-base font-semibold text-[#06060A] shadow-[0_0_35px_rgba(59,130,246,.25)] transition hover:-translate-y-0.5 hover:shadow-2xl sm:w-auto"
+            className="inline-flex h-13 min-h-[52px] w-full items-center justify-center rounded-xl bg-white px-7 text-base font-semibold text-[#06060A] shadow-[0_0_35px_rgba(59,130,246,.25)] transition hover:-translate-y-0.5 hover:shadow-2xl sm:w-auto"
           >
-            {sv ? "+ Lägg till ditt första lån" : "+ Add your first loan"}
+            {sv ? "Lägg till ditt första lån" : "Add your first loan"}
           </button>
           <button
             id="fill-sample"
             onClick={onSample}
-            className="inline-flex h-12 w-full items-center justify-center rounded-xl border border-white/[.12] bg-transparent px-6 text-base font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/[.05] sm:w-auto"
+            className="inline-flex min-h-[52px] w-full items-center justify-center rounded-xl border border-white/[.12] px-6 text-base font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/[.05] sm:w-auto"
           >
             {sv ? "Fyll exempel" : "Fill sample data"}
           </button>
         </div>
-        <div className="mt-12 text-[12px] font-medium uppercase tracking-[2px] text-white/55 md:text-xs">
+        <div className="mt-10 max-w-[420px] text-[11px] font-medium uppercase tracking-[1.6px] text-white/45 md:mt-12 md:max-w-none md:text-[12px]">
           {sv
-            ? "SEK · EUR · USD · LOKAL MATEMATIK · INGEN SPÅRNING · FUNGERAR OFFLINE"
-            : "SEK · EUR · USD · LOCAL MATH · NO TRACKING · WORKS OFFLINE"}
+            ? "Bolån · Blancolån · Kreditkort · Billån · CSN · Leasing · Avbetalning"
+            : "Mortgage · Personal · Credit card · Car · Student · Leasing · Instalments"}
         </div>
       </div>
     </main>
@@ -1671,17 +1213,17 @@ function Title({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="mb-8 flex items-end justify-between gap-4">
-      <div>
-        <span className="text-xs font-bold uppercase tracking-widest text-blue-400">
+    <div className="mb-6 flex flex-col gap-4 md:mb-8 md:flex-row md:items-end md:justify-between">
+      <div className="min-w-0">
+        <span className="text-[11px] font-bold uppercase tracking-[.14em] text-blue-400">
           {eyebrow}
         </span>
-        <h1 className="mt-2 text-3xl font-semibold tracking-[-.04em] md:text-4xl">
+        <h1 className="mt-1.5 text-[26px] font-semibold leading-tight tracking-[-.04em] sm:text-3xl md:text-4xl">
           {title}
         </h1>
-        <p className="mt-2 text-sm text-white/65">{sub}</p>
+        <p className="mt-2 text-sm leading-6 text-white/65">{sub}</p>
       </div>
-      {action}
+      {action ? <div className="shrink-0">{action}</div> : null}
     </div>
   );
 }
@@ -1701,11 +1243,11 @@ function Field({
   readOnly?: boolean;
 }) {
   return (
-    <label className="rounded-2xl border border-white/[.06] bg-black/10 p-3">
-      <small className="block uppercase tracking-wider text-white/55">
+    <label className="block rounded-xl border border-white/[.06] bg-black/15 px-3 py-2 transition focus-within:border-blue-400/30">
+      <small className="block truncate text-[10px] uppercase tracking-[.12em] text-white/50">
         {label}
       </small>
-      <span className="mt-1 flex h-7 items-center">
+      <span className="flex items-baseline gap-1">
         <input
           spellCheck={false}
           readOnly={readOnly}
@@ -1724,130 +1266,321 @@ function Field({
                 : 0,
             );
           }}
-          className="w-full bg-transparent text-base outline-none read-only:text-white/65"
+          className="w-full min-w-0 bg-transparent py-0.5 text-[17px] tabular-nums outline-none read-only:text-white/65"
         />
-        <span className="text-xs text-white/55">{suffix}</span>
+        {suffix ? (
+          <span className="shrink-0 text-xs text-white/50">{suffix}</span>
+        ) : null}
       </span>
     </label>
   );
 }
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-white/[.06] bg-black/10 p-4">
-      <small className="uppercase tracking-wider text-white/55">{label}</small>
-      <b className="mt-2 block text-lg">{value}</b>
+    <div className="rounded-xl border border-white/[.06] bg-black/15 px-3 py-2.5">
+      <small className="block truncate text-[10px] uppercase tracking-[.12em] text-white/50">
+        {label}
+      </small>
+      <b className="mt-0.5 block text-lg tabular-nums">{value}</b>
     </div>
   );
 }
-function Preview({
-  c,
-  name,
-  value,
-  icon,
+/**
+ * Mobilens navigering. Flikarna låg tidigare bara i headern bakom `md:flex`,
+ * så på telefon gick det inte att nå "Vad är bäst?" eller "Flytta till
+ * bolånet" över huvud taget.
+ */
+function MobileBar({
+  lang,
+  t,
+  tab,
+  setTab,
+  plan,
+  hasDebts,
 }: {
-  c: string;
-  name: string;
-  value: string;
-  icon: React.ReactNode;
+  lang: Lang;
+  t: Copy;
+  tab: Tab;
+  setTab: (t: Tab) => void;
+  plan: PlanResult;
+  hasDebts: boolean;
 }) {
+  const icons: Record<Tab, React.ReactNode> = {
+    today: <WalletCards size={17} />,
+    compare: <ArrowRightLeft size={17} />,
+    refinance: <Home size={17} />,
+  };
   return (
-    <div
-      className={`absolute w-52 rounded-2xl border border-white/10 bg-white/[.07] p-4 shadow-2xl backdrop-blur-xl ${c}`}
-    >
-      <div className="flex justify-between text-xs text-white/65">
-        {name}
-        {icon}
-      </div>
-      <b className="mt-2 block text-lg">{value}</b>
-    </div>
-  );
-}
-function Mini({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="px-2 text-center">
-      <small className="block text-[11px] text-white/55">{label}</small>
-      <b className="text-xs">{value}</b>
+    <div className="fixed inset-x-0 bottom-0 z-50 border-t border-white/10 bg-[#0B0B11]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden">
+      {hasDebts && (
+        <div className="flex items-center justify-between gap-3 border-b border-white/[.06] px-4 py-2 text-[11px]">
+          <span className="text-white/55">
+            {t.free}{" "}
+            <b className="text-white">
+              {plan.fullyPaid ? month(plan.freedomDate, lang) : "—"}
+            </b>
+          </span>
+          <span className="text-white/55">
+            {lang === "sv" ? "Ränta" : "Interest"}{" "}
+            <b className="text-white">{money(plan.totalInterest, lang, true)}</b>
+          </span>
+        </div>
+      )}
+      <nav className="grid grid-cols-3">
+        {(Object.keys(t.tabs) as Tab[]).map((key) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            aria-current={tab === key ? "page" : undefined}
+            className={`flex min-h-[56px] flex-col items-center justify-center gap-1 text-[11px] font-medium transition ${
+              tab === key ? "text-blue-300" : "text-white/50"
+            }`}
+          >
+            {icons[key]}
+            {t.tabs[key]}
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
 
-function BestView({ lang, t, cheapest, smallest, loans, setLoans }: any) {
-  const sv = lang === "sv",
-    diff = Math.abs(cheapest.totalNewInterest - smallest.totalNewInterest);
+function BestView({
+  lang,
+  t,
+  plan,
+  avalanchePlan,
+  snowballPlan,
+  loans,
+  setLoans,
+}: {
+  lang: Lang;
+  t: Copy;
+  plan: PlanResult;
+  avalanchePlan: PlanResult;
+  snowballPlan: PlanResult;
+  loans: Loan[];
+  setLoans: (fn: (current: Loan[]) => Loan[]) => void;
+}) {
+  const sv = lang === "sv";
+  const routes = [
+    {
+      key: "snowball",
+      icon: "\u26a1",
+      title: sv ? "Minsta skulden först" : "Smallest debt first",
+      text: sv
+        ? "Ett lån försvinner snabbt. Bra om du behöver se att det rör sig."
+        : "One debt disappears fast. Good if you need to see progress.",
+      result: snowballPlan,
+    },
+    {
+      key: "avalanche",
+      icon: "\ud83d\udcb0",
+      title: sv ? "Dyraste räntan först" : "Highest rate first",
+      text: sv
+        ? "Lägst total ränta. Kan kännas långsamt i början."
+        : "Lowest total interest. Can feel slow at the start.",
+      result: avalanchePlan,
+    },
+    {
+      key: "custom",
+      icon: "\u270b",
+      title: sv ? "Din egen ordning" : "Your own order",
+      text: sv
+        ? "Ordningen du dragit i Mina lån."
+        : "The order you dragged in My debts.",
+      result: plan,
+    },
+  ];
+  // Vinnaren utses av siffrorna, inte i förväg. Tidigare stod det alltid att
+  // "Dyraste först" sparar pengar, även när den inte gjorde det.
+  const payable = routes.filter((r) => r.result.fullyPaid);
+  const best = payable.reduce<(typeof routes)[number] | null>(
+    (winner, route) =>
+      !winner || route.result.totalInterest < winner.result.totalInterest
+        ? route
+        : winner,
+    null,
+  );
+  const worst = payable.reduce<(typeof routes)[number] | null>(
+    (loser, route) =>
+      !loser || route.result.totalInterest > loser.result.totalInterest
+        ? route
+        : loser,
+    null,
+  );
+  const spread =
+    best && worst ? worst.result.totalInterest - best.result.totalInterest : 0;
+  // Med två lån där det minsta också har högsta räntan blir "minsta först" och
+  // "dyrast först" samma ordning. Då finns ingen vinnare att utse, och att peka
+  // ut den som råkar ligga först i listan vore påhittat.
+  const winners = best
+    ? payable.filter((r) => r.result.totalInterest === best.result.totalInterest)
+    : [];
+  const hasSingleWinner = winners.length === 1 && spread > 0;
   return (
-    <main className="mx-auto max-w-[1280px] px-5 py-8 md:px-10">
+    <main className="mx-auto max-w-[1280px] px-4 py-6 pb-40 md:px-8 md:py-10 md:pb-16">
       <Title
         eyebrow={t.tabs.compare}
         title={sv ? "Vad är bäst för dig?" : "What works best for you?"}
         sub={
           sv
-            ? "Välj mellan motivation, lägsta kostnad eller din egen ordning."
-            : "Choose motivation, lowest cost, or your own order."
+            ? "Samma lån och samma pengar \u2014 bara olika ordning att betala av dem i."
+            : "Same debts, same money \u2014 only the order changes."
         }
       />
-      <div className="mb-5 inline-flex rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-300">
-        💰 {sv ? "Sparar" : "Saves"} {money(diff, lang)}{" "}
-        {sv ? "med Dyraste först" : "with Highest cost first"}
-      </div>
-      <div className="grid gap-3 md:grid-cols-3">
-        <Choice
-          icon="⚡"
-          title={sv ? "Betala minsta först" : "Pay smallest first"}
-          text={sv ? "Snabb vinst, motivation" : "Quick win and motivation"}
-          date={month(smallest.newFreedomDate, lang)}
-        />
-        <Choice
-          icon="💰"
-          title={sv ? "Betala dyraste först" : "Pay highest cost first"}
-          text={
-            sv
-              ? "Sparar mest, matematiskt bäst"
-              : "Saves the most, mathematically best"
-          }
-          date={month(cheapest.newFreedomDate, lang)}
-          best
-        />
-        <div className="card p-4">
-          <div className="text-2xl">✋</div>
-          <h2 className="mt-3 font-semibold">
-            {sv
-              ? "Egen ordning — dra för att ändra"
-              : "Your order — drag to change"}
-          </h2>
-          <p className="mt-1 text-xs text-white/65">
-            {sv
-              ? "Du bestämmer vad som känns viktigast"
-              : "You decide what matters most"}
-          </p>
-          <div className="mt-4 space-y-2">
-            {loans.map((loan: Loan, i: number) => (
-              <div
-                key={loan.id}
-                draggable
-                onDragStart={(e) =>
-                  e.dataTransfer.setData("text/plain", String(i))
+      {loans.length < 2 ? (
+        <p className="card p-5 text-sm text-white/65">
+          {sv
+            ? "L\u00e4gg till minst tv\u00e5 l\u00e5n f\u00f6r att kunna j\u00e4mf\u00f6ra ordningar."
+            : "Add at least two debts to compare orders."}
+        </p>
+      ) : (
+        <>
+          <div
+            className={`mb-5 inline-flex rounded-full border px-4 py-2 text-sm font-semibold ${
+              spread > 0
+                ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
+                : "border-white/10 bg-white/[.05] text-white/70"
+            }`}
+          >
+            {hasSingleWinner && best
+              ? sv
+                ? `\u2b50 ${best.title} \u00e4r billigast \u2014 upp till ${money(spread, lang)} mindre i r\u00e4nta`
+                : `\u2b50 ${best.title} is cheapest \u2014 up to ${money(spread, lang)} less interest`
+              : spread > 0
+                ? sv
+                  ? `Flera ordningar \u00e4r lika billiga \u2014 upp till ${money(spread, lang)} mindre i r\u00e4nta \u00e4n den dyraste`
+                  : `Several orders tie for cheapest \u2014 up to ${money(spread, lang)} less interest than the costliest`
+                : sv
+                  ? "Alla ordningar kostar lika mycket med de h\u00e4r l\u00e5nen"
+                  : "Every order costs the same with these debts"}
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {routes.map((route) => (
+              <RouteCard
+                key={route.key}
+                lang={lang}
+                icon={route.icon}
+                title={route.title}
+                text={route.text}
+                result={route.result}
+                best={Boolean(
+                  spread > 0 &&
+                    best &&
+                    route.result.fullyPaid &&
+                    route.result.totalInterest === best.result.totalInterest,
+                )}
+                extraInterest={
+                  best && route.result.fullyPaid
+                    ? route.result.totalInterest - best.result.totalInterest
+                    : 0
                 }
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => {
-                  const from = +e.dataTransfer.getData("text/plain");
-                  setLoans((current: Loan[]) => {
-                    const next = [...current],
-                      [item] = next.splice(from, 1);
-                    next.splice(i, 0, item);
-                    return next;
-                  });
-                }}
-                className="cursor-grab rounded-xl border border-white/[.06] bg-black/15 p-3 text-sm"
-              >
-                ⠿ {loan.name}
-              </div>
+              />
             ))}
           </div>
-        </div>
-      </div>
+          <div className="card mt-3 p-5">
+            <h2 className="font-semibold">
+              {sv ? "Din ordning" : "Your order"}
+            </h2>
+            <p className="mt-1 text-xs text-white/65">
+              {sv
+                ? "Dra f\u00f6r att \u00e4ndra. \u00d6versta l\u00e5net f\u00e5r alla frigjorda pengar f\u00f6rst."
+                : "Drag to reorder. The top debt receives every freed payment first."}
+            </p>
+            <div className="mt-4 space-y-2">
+              {loans.map((loan, i) => (
+                <div
+                  key={loan.id}
+                  draggable
+                  onDragStart={(e) =>
+                    e.dataTransfer.setData("text/plain", String(i))
+                  }
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    const from = Number(e.dataTransfer.getData("text/plain"));
+                    if (!Number.isInteger(from) || from === i) return;
+                    setLoans((current) => {
+                      const next = [...current];
+                      const [item] = next.splice(from, 1);
+                      if (!item) return current;
+                      next.splice(i, 0, item);
+                      return next;
+                    });
+                  }}
+                  className="flex cursor-grab items-center gap-3 rounded-xl border border-white/[.06] bg-black/15 p-3 text-sm active:cursor-grabbing"
+                >
+                  <span className="text-white/35">{"\u283f"}</span>
+                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/5 text-xs">
+                    {i + 1}
+                  </span>
+                  <span className="flex-1 truncate">{loan.name}</span>
+                  <span className="shrink-0 text-xs text-white/55">
+                    {(loan.interestRate * 100).toFixed(1).replace(".", sv ? "," : ".")} %
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </main>
   );
 }
+
+function RouteCard({
+  lang,
+  icon,
+  title,
+  text,
+  result,
+  best,
+  extraInterest,
+}: {
+  lang: Lang;
+  icon: string;
+  title: string;
+  text: string;
+  result: PlanResult;
+  best: boolean;
+  extraInterest: number;
+}) {
+  const sv = lang === "sv";
+  return (
+    <div
+      className={`card flex flex-col p-5 ${best ? "border-emerald-400/30 bg-emerald-500/[.04]" : ""}`}
+    >
+      <div className="flex items-start justify-between">
+        <span className="text-2xl">{icon}</span>
+        {best && (
+          <span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[11px] font-bold tracking-wide text-emerald-300">
+            {sv ? "BILLIGAST" : "CHEAPEST"}
+          </span>
+        )}
+      </div>
+      <h2 className="mt-3 font-semibold">{title}</h2>
+      <p className="mt-1 flex-1 text-xs leading-5 text-white/65">{text}</p>
+      <dl className="mt-4 space-y-1.5 border-t border-white/[.06] pt-4 text-sm">
+        <div className="flex justify-between gap-3">
+          <dt className="text-white/55">{sv ? "Skuldfri" : "Debt-free"}</dt>
+          <dd className="font-medium">
+            {result.fullyPaid ? month(result.freedomDate, lang) : "\u2014"}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-white/55">{sv ? "Total ränta" : "Total interest"}</dt>
+          <dd className="font-medium">{money(result.totalInterest, lang)}</dd>
+        </div>
+      </dl>
+      <p className="mt-3 min-h-[1.125rem] text-xs text-orange-300">
+        {result.fullyPaid && extraInterest > 0
+          ? `+${money(extraInterest, lang)} ${sv ? "mer i ränta än billigaste" : "more interest than the cheapest"}`
+          : ""}
+      </p>
+    </div>
+  );
+}
+
 function Choice({
   icon,
   title,
@@ -1934,16 +1667,20 @@ function SavingsVsPayoff({
   lang,
   loanRate,
   loanName,
+  deductible,
 }: {
   lang: Lang;
   loanRate: number;
   loanName: string;
+  deductible: boolean;
 }) {
   const [cash, setCash] = useState(50000),
     [saveRate, setSaveRate] = useState(0.01),
     [debtRate, setDebtRate] = useState(loanRate),
-    [deduction, setDeduction] = useState(true),
+    [deduction, setDeduction] = useState(deductible),
     sv = lang === "sv";
+  // Följer lånet man jämför mot: byter användaren lån ska rutan följa med.
+  useEffect(() => setDeduction(deductible), [deductible]);
   const { save, pay, diff, max } = useMemo(() => {
     const cashValue = new Big(Math.max(0, cash));
     const saveValue = cashValue
@@ -1966,6 +1703,9 @@ function SavingsVsPayoff({
   return (
     <div className="card rounded-xl p-4">
       <b>{sv ? "Ska jag amortera eller spara?" : "Save or pay off?"} 🤔</b>
+      <p className="mt-1 text-[11px] text-white/45">
+        {sv ? "Jämför mot" : "Compared against"} {loanName}
+      </p>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <Field
           label={sv ? "Sparpengar" : "Savings"}
@@ -1982,7 +1722,7 @@ function SavingsVsPayoff({
           onChange={(v) => setSaveRate(v / 100)}
         />
         <Field
-          label={`${sv ? "Lånets ränta" : "Loan rate"} · ${loanName}`}
+          label={sv ? "Lånets ränta" : "Loan rate"}
           value={(debtRate * 100)
             .toFixed(1)
             .replace(".", sv ? "," : ".")}
@@ -1990,23 +1730,35 @@ function SavingsVsPayoff({
           decimal
           onChange={(v) => setDebtRate(v / 100)}
         />
-        <label className="flex items-center gap-2 text-[12px] text-white/65">
+        <label className="flex items-center gap-2 rounded-2xl border border-white/[.06] bg-black/10 p-3 text-[12px] text-white/65">
           <input
             type="checkbox"
             checked={deduction}
             onChange={(e) => setDeduction(e.target.checked)}
+            className="h-4 w-4 shrink-0 accent-blue-500"
           />
-          {sv ? "Efter 30% ränteavdrag" : "After 30% deduction"}
+          <span>
+            {sv ? "Ränteavdrag 30 %" : "30% interest deduction"}
+            {!deductible && (
+              <span className="mt-0.5 block text-[11px] text-white/45">
+                {sv
+                  ? "Gäller inte lån utan säkerhet"
+                  : "Not for unsecured debt"}
+              </span>
+            )}
+          </span>
         </label>
       </div>
       <div className="mt-4 space-y-2 text-[12px]">
         <Bar
+          lang={lang}
           label={sv ? "Spara" : "Save"}
           value={save}
           max={max}
           color="#3B82F6"
         />
         <Bar
+          lang={lang}
           label={sv ? "Amortera" : "Pay off"}
           value={pay}
           max={max}
@@ -2026,18 +1778,20 @@ function SavingsVsPayoff({
             : `Save — ${money(-diff, lang)}/year better`}
       </div>
       <p className="mt-2 text-center text-[12px] text-white/55">
-        {sv ? "På 5 år" : "Over 5 years"}: {money(Math.abs(diff) * 5, lang)}{" "}
-        {sv ? "skillnad" : "difference"}
+        {sv ? "Cirka på 5 år" : "Roughly over 5 years"}:{" "}
+        {money(Math.abs(diff) * 5, lang)} {sv ? "skillnad" : "difference"}
       </p>
     </div>
   );
 }
 function Bar({
+  lang,
   label,
   value,
   max,
   color,
 }: {
+  lang: Lang;
   label: string;
   value: number;
   max: number;
@@ -2045,9 +1799,11 @@ function Bar({
 }) {
   return (
     <div>
-      <div className="flex justify-between">
+      <div className="flex justify-between gap-3">
         <span>{label}</span>
-        <span>{Math.round(value).toLocaleString()} kr/yr</span>
+        <span className="tabular-nums">
+          {number(value, lang)} {lang === "sv" ? "kr/år" : "kr/yr"}
+        </span>
       </div>
       <div className="mt-1 h-2 rounded-full bg-white/5">
         <div
@@ -2088,8 +1844,8 @@ function TodayV5(p: any) {
       setLeasingTerms,
       timeBoxes,
       setTimeBoxes,
-      waterfall,
-      avalancheWaterfall,
+      plan,
+      avalanchePlan,
       onPdf,
     } = p,
     sv = lang === "sv";
@@ -2106,21 +1862,36 @@ function TodayV5(p: any) {
       !highest || loan.interestRate > highest.interestRate ? loan : highest,
     null,
   );
-  const stressed = useMemo(
+  // Stresstestet måste räknas med samma motor och samma spelregler som
+  // huvudplanen, annars jämförs två olika verkligheter. Enda skillnaden är
+  // bolåneräntan.
+  const stressed = useMemo<PlanResult | null>(
     () =>
       mortgage
-        ? calculatePayoffSchedule({
-            loans: debtPlanLoans.map((x: Loan) =>
-              x.id === mortgage.id
-                ? { ...x, interestRate: x.interestRate + fearRate / 100 }
-                : x,
-            ),
-            oneTimePayments: [],
+        ? simulatePlan({
+            loans: (plan as PlanResult).loans.map((row) => {
+              const source = debtPlanLoans.find((x: Loan) => x.id === row.id)!;
+              return {
+                id: source.id,
+                name: source.name,
+                balance: source.balance,
+                interestRate:
+                  source.id === mortgage.id
+                    ? source.interestRate + fearRate / 100
+                    : source.interestRate,
+                monthlyPayment: source.currentMonthlyPayment,
+                paymentStyle: source.paymentStyle,
+                extraMonthly: source.extraMonthly,
+                extraMonthlyEnabled: source.extraMonthlyEnabled,
+              };
+            }),
+            strategy: "custom",
             startDate: START,
-            strategy,
+            oneTimePayments: [],
+            rollover: true,
           })
         : null,
-    [debtPlanLoans, mortgage, fearRate, strategy],
+    [debtPlanLoans, mortgage, fearRate, plan],
   );
   const dragSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -2252,8 +2023,8 @@ function TodayV5(p: any) {
     ]);
   };
   return (
-    <main className="mx-auto grid max-w-[1280px] gap-3 px-5 py-8 pb-28 md:px-8 lg:grid-cols-[1fr_360px]">
-      <section>
+    <main className="mx-auto grid max-w-[1280px] gap-3 px-4 py-6 pb-40 md:px-8 md:py-8 md:pb-16 lg:grid-cols-[1fr_360px] lg:items-start">
+      <section className="order-2 min-w-0 lg:order-none lg:col-start-1 lg:row-span-2">
         <Title
           eyebrow={sv ? "Räkna på vad som helst" : "Calculate anything"}
           title={t.plan}
@@ -2279,7 +2050,7 @@ function TodayV5(p: any) {
             </div>
           }
         />
-        <div className="mb-3 flex flex-wrap gap-2">
+        <div className="-mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] md:mx-0 md:flex-wrap md:overflow-visible md:px-0">
           {(
             [
               "mortgage",
@@ -2290,7 +2061,11 @@ function TodayV5(p: any) {
               "installment",
             ] as LoanKind[]
           ).map((kind) => (
-            <button key={kind} onClick={() => addPreset(kind)} className="pill">
+            <button
+              key={kind}
+              onClick={() => addPreset(kind)}
+              className="pill shrink-0 whitespace-nowrap"
+            >
               +{" "}
               {kind === "leasing"
                 ? "Leasing"
@@ -2325,7 +2100,7 @@ function TodayV5(p: any) {
                 const kind: LoanKind = loanKinds[loan.id] || "other";
                 const meta = LOAN_KINDS[kind];
                 const advanced = expanded[loan.id];
-                const waterfallLoan = (waterfall as WaterfallResult).loans.find(
+                const planLoan = (plan as PlanResult).loans.find(
                   (item) => item.id === loan.id,
                 );
                 const leasing =
@@ -2341,12 +2116,12 @@ function TodayV5(p: any) {
                     disabled={kind === "leasing"}
                     label={`${sv ? "Flytta" : "Move"} ${loan.name}`}
                   >
-                    <article className="card p-4">
+                    <article className="card relative p-4">
                       <div className="flex gap-3">
                         <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white/[.05] text-xl">
                           {meta.icon}
                         </span>
-                        <div className="grid flex-1 gap-2 pr-16 sm:grid-cols-2">
+                        <div className="grid min-w-0 flex-1 gap-2 pr-9 sm:grid-cols-2 sm:pr-10">
                           <Select
                             label={sv ? "Typ av lån" : "Loan type"}
                             value={kind}
@@ -2411,12 +2186,13 @@ function TodayV5(p: any) {
                               return next;
                             });
                           }}
+                          className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-lg text-white/50 transition hover:bg-white/[.06] hover:text-white"
                         >
-                          <X size={15} className="text-white/55" />
+                          <X size={15} />
                         </button>
                       </div>
                       <p
-                        className={`ml-14 mt-2 text-[12px] ${kind === "credit" ? "text-red-400" : "text-white/55"}`}
+                        className={`mt-2 text-[12px] sm:ml-14 ${kind === "credit" ? "text-red-400" : "text-white/55"}`}
                       >
                         {meta[sv ? "helpSv" : "helpEn"]}
                       </p>
@@ -2450,7 +2226,7 @@ function TodayV5(p: any) {
                               }
                             />
                           ) : null}
-                          <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
                             <Field
                               label={t.balance}
                               value={number(loan.balance, lang)}
@@ -2486,24 +2262,24 @@ function TodayV5(p: any) {
                                 }}
                               />
                               {kind === "mortgage" || kind === "personal" ? (
-                                <p className="mt-1 px-1 text-[12px] text-white/55">
-                                  {kind === "mortgage"
-                                    ? "0,1–15 %"
-                                    : "0,1–30 %"}
+                                <p className="mt-1 px-1 text-[11px] text-white/45">
+                                  {kind === "mortgage" ? "0,1–15 %" : "0,1–30 %"}
                                 </p>
                               ) : null}
                             </div>
-                            <Field
-                              label={sv ? "Månadskostnad" : "Monthly cost"}
-                              value={number(loan.currentMonthlyPayment, lang)}
-                              onChange={(value) =>
-                                updateLoan(
-                                  loan.id,
-                                  "currentMonthlyPayment",
-                                  value,
-                                )
-                              }
-                            />
+                            <div className="col-span-2 sm:col-span-1">
+                              <Field
+                                label={sv ? "Månadskostnad" : "Monthly cost"}
+                                value={number(loan.currentMonthlyPayment, lang)}
+                                onChange={(value) =>
+                                  updateLoan(
+                                    loan.id,
+                                    "currentMonthlyPayment",
+                                    value,
+                                  )
+                                }
+                              />
+                            </div>
                           </div>
 
                           {kind === "credit" ? (
@@ -2522,7 +2298,7 @@ function TodayV5(p: any) {
                                 ? "Månadskostnaden täcker inte räntan. Skulden växer."
                                 : "The monthly payment does not cover interest. This debt grows."}
                             </p>
-                          ) : waterfallLoan && !waterfallLoan.fullyPaid ? (
+                          ) : planLoan && !planLoan.fullyPaid ? (
                             <p className="mt-3 rounded-xl border border-orange-500/25 bg-orange-500/10 p-3 text-xs text-orange-200">
                               ⚠️{" "}
                               {sv
@@ -2531,19 +2307,13 @@ function TodayV5(p: any) {
                             </p>
                           ) : null}
 
-                          {waterfallLoan ? (
+                          {planLoan ? (
                             <div className="mt-3 rounded-xl border border-blue-400/15 bg-blue-500/[.06] px-3 py-2 text-xs text-blue-200">
-                              {!waterfallLoan.fullyPaid
-                                ? sv
+                              {planLoan.fullyPaid
+                                ? `${sv ? "Klart" : "Done"} ${month(planLoan.endDate, lang)} · ${describePace(planLoan, lang)}`
+                                : sv
                                   ? "Inte skuldfri inom 50 år med nuvarande betalning"
-                                  : "Not debt-free within 50 years at this payment"
-                                : waterfallLoan.isAnchor
-                                  ? sv
-                                    ? `Klart om ${waterfallLoan.independentMonths} mån — betalas av för sig`
-                                    : `Done in ${waterfallLoan.independentMonths} months — paid off on its own`
-                                  : sv
-                                    ? `Klart om ${waterfallLoan.finishesAt} mån: ${waterfallLoan.waitMonths} mån medan lånen ovanför betalas av, sedan ${waterfallLoan.focusMonths} mån med full kraft här`
-                                    : `Done in ${waterfallLoan.finishesAt} months: ${waterfallLoan.waitMonths} while the debts above are paid off, then ${waterfallLoan.focusMonths} at full force here`}
+                                  : "Not debt-free within 50 years at this payment"}
                             </div>
                           ) : null}
 
@@ -2621,8 +2391,8 @@ function TodayV5(p: any) {
                                 />
                                 <p className="mt-3 text-xs text-white/65">
                                   {sv
-                                    ? `När lånet är klart flyttas ${number(loan.currentMonthlyPayment + (loan.extraMonthly || 0), lang)} kr/mån automatiskt till nästa lån.`
-                                    : `When paid, SEK ${number(loan.currentMonthlyPayment + (loan.extraMonthly || 0), lang)}/month automatically rolls into the next debt.`}
+                                    ? `När lånet är klart flyttas ${number(freedMonthly(loan), lang)} kr/mån automatiskt till nästa lån i ordningen.`
+                                    : `When this is paid off, SEK ${number(freedMonthly(loan), lang)}/month rolls into the next debt in line.`}
                                 </p>
                                 <p className="mt-2 text-xs text-white/65">
                                   {sv
@@ -2631,12 +2401,12 @@ function TodayV5(p: any) {
                                   <b className="text-white">
                                     {money(
                                       loan.balance +
-                                        (waterfallLoan?.interest || 0),
+                                        (planLoan?.totalInterest || 0),
                                       lang,
                                     )}
                                   </b>{" "}
                                   · {sv ? "varav" : "including"}{" "}
-                                  {money(waterfallLoan?.interest || 0, lang)}{" "}
+                                  {money(planLoan?.totalInterest || 0, lang)}{" "}
                                   {sv ? "ränta" : "interest"}
                                 </p>
                               </div>
@@ -2652,21 +2422,24 @@ function TodayV5(p: any) {
           </SortableContext>
         </DndContext>
       </section>
-      <aside className="space-y-3 lg:sticky lg:top-24 lg:h-fit">
+      <div className="order-1 min-w-0 lg:order-none lg:col-start-2 lg:row-start-1">
         <ResultSidebar
           lang={lang}
           t={t}
-          result={result}
           loans={debtPlanLoans}
-          waterfall={waterfall}
-          avalancheWaterfall={avalancheWaterfall}
+          reinvestments={reinvestments}
+          plan={plan}
+          avalanchePlan={avalanchePlan}
           monthlyTotal={monthlyTotal}
         />
+      </div>
+      <aside className="order-3 min-w-0 space-y-3 lg:order-none lg:col-start-2 lg:row-start-2">
         {highestRateLoan ? (
           <SavingsVsPayoff
             lang={lang}
             loanRate={highestRateLoan.interestRate}
             loanName={highestRateLoan.name}
+            deductible={isDeductible(loanKinds[highestRateLoan.id])}
           />
         ) : null}
         {mortgage && stressed ? (
@@ -2675,7 +2448,7 @@ function TodayV5(p: any) {
             rate={fearRate}
             setRate={setFearRate}
             mortgage={mortgage}
-            result={result}
+            plan={plan}
             stressed={stressed}
             income={income}
             setIncome={setIncome}
@@ -2715,20 +2488,31 @@ function Fear({
   rate,
   setRate,
   mortgage,
-  result,
+  plan,
   stressed,
   income,
   setIncome,
   monthly,
-}: any) {
-  const [incomeDrop, setIncomeDrop] = useState(20),
-    [scenarios, setScenarios] = useState<number[]>([]);
+}: {
+  lang: Lang;
+  rate: number;
+  setRate: (n: number) => void;
+  mortgage: Loan;
+  plan: PlanResult;
+  stressed: PlanResult;
+  income: number;
+  setIncome: (n: number) => void;
+  monthly: number;
+}) {
+  const [incomeDrop, setIncomeDrop] = useState(20);
   const sv = lang === "sv",
     monthlyShock = (mortgage.balance * (rate / 100)) / 12,
-    interestShock = Math.max(
-      0,
-      stressed.totalNewInterest - (result?.totalNewInterest || 0),
-    );
+    // Båda sidor kommer ur samma motor, så skillnaden är ren ränteeffekt.
+    interestShock = Math.max(0, stressed.totalInterest - plan.totalInterest),
+    monthsShock =
+      stressed.fullyPaid && plan.fullyPaid
+        ? Math.max(0, stressed.totalMonths - plan.totalMonths)
+        : 0;
   return (
     <div className="card rounded-xl p-3">
       <div className="flex items-center justify-between">
@@ -2775,8 +2559,16 @@ function Fear({
           +{money(monthlyShock, lang)}/{sv ? "mån" : "mo"}
         </b>
         <br />+{money(interestShock, lang)}{" "}
-        {sv ? "total ränta" : "total interest"} ·{" "}
-        {sv ? "skuldfri" : "debt-free"} {month(stressed.newFreedomDate, lang)}
+        {sv ? "mer i ränta totalt" : "more interest in total"}
+        {stressed.fullyPaid ? (
+          <>
+            {" · "}
+            {sv ? "skuldfri" : "debt-free"} {month(stressed.freedomDate, lang)}
+            {monthsShock > 0
+              ? ` (${duration(monthsShock, lang)} ${sv ? "senare" : "later"})`
+              : ""}
+          </>
+        ) : null}
       </div>
       <label className="mt-4 block text-xs text-white/65">
         {sv ? "Nettoinkomst (valfritt)" : "Net income (optional)"}
@@ -2807,12 +2599,6 @@ function Fear({
             : "Outflow exceeds 60% of income. Could you handle a 20% income drop?"}
         </p>
       )}
-      <button
-        onClick={() => setScenarios((x) => [...x, rate])}
-        className="button mt-3 w-full"
-      >
-        + {sv ? "Lägg till scenario" : "Add scenario"} ({scenarios.length})
-      </button>
     </div>
   );
 }
@@ -2828,28 +2614,40 @@ function RefinanceV5({
   setMortgageValue,
   personalTotal,
   setPersonalTotal,
-  refinanceDate,
-  baselineMonths,
-}: any) {
-  const sv = lang === "sv",
-    savedMonths = Math.max(0, baselineMonths - monthsFromStart(refinanceDate)),
-    color =
-      bake.ltvAfter < 0.7
-        ? "#22C55E"
-        : bake.ltvAfter <= 0.85
-          ? "#EAB308"
-          : "#EF4444",
-    max = Math.max(1, Math.min(1000000, personalTotal));
+}: {
+  lang: Lang;
+  t: Copy;
+  bake: BakeInResult;
+  bakeAmount: number;
+  setBakeAmount: (n: number) => void;
+  propertyValue: number;
+  setPropertyValue: (n: number) => void;
+  mortgageValue: number;
+  setMortgageValue: (n: number) => void;
+  personalTotal: number;
+  setPersonalTotal: (n: number) => void;
+}) {
+  const sv = lang === "sv";
+  const [choice, setChoice] = useState<"keepPaying" | "minimumPayment">(
+    "keepPaying",
+  );
+  const scenario = bake.scenarios[choice];
+  const color =
+    bake.ltvAfter < 0.7 ? "#22C55E" : bake.ltvAfter <= 0.85 ? "#EAB308" : "#EF4444";
+  const sliderMax = Math.max(1, personalTotal);
+  const monthsEarlier = scenario.feasible
+    ? Math.max(0, bake.todayMonths - scenario.months)
+    : 0;
   return (
-    <main className="mx-auto max-w-[1120px] px-5 py-10 pb-28 md:px-10">
+    <main className="mx-auto max-w-[1120px] px-4 py-6 pb-40 md:px-8 md:py-10 md:pb-16">
       <Title
         eyebrow={t.tabs.refinance}
         title={t.refinanceTitle}
         sub={t.refinanceSub}
       />
-      <div className="grid gap-5 lg:grid-cols-[1.1fr_.9fr]">
-        <div className="card p-7">
-          <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid items-start gap-4 lg:grid-cols-[1.05fr_.95fr]">
+        <div className="card p-5 md:p-6">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             <Field
               label={t.property}
               value={number(propertyValue, lang)}
@@ -2860,71 +2658,186 @@ function RefinanceV5({
               value={number(mortgageValue, lang)}
               onChange={setMortgageValue}
             />
-            <Field
-              label={t.personal}
-              value={number(personalTotal, lang)}
-              onChange={(n) =>
-                setPersonalTotal(Math.min(10_000_000, Math.max(0, n)))
-              }
-            />
+            <div className="col-span-2 sm:col-span-1">
+              <Field
+                label={t.personal}
+                value={number(personalTotal, lang)}
+                onChange={(n) =>
+                  setPersonalTotal(Math.min(10_000_000, Math.max(0, n)))
+                }
+              />
+            </div>
           </div>
-          <div className="mt-8 flex items-end gap-3">
+
+          <div className="mt-6 flex items-end gap-2">
             <div className="flex-1">
               <Field
                 label={t.baked}
                 value={number(bakeAmount, lang)}
-                onChange={(n) =>
-                  setBakeAmount(Math.min(1000000, Math.max(0, n)))
-                }
+                onChange={(n) => setBakeAmount(Math.min(sliderMax, Math.max(0, n)))}
               />
             </div>
             <button
               onClick={() => setBakeAmount(personalTotal)}
-              className="button"
+              className="button shrink-0 self-stretch px-4 py-0"
             >
-              {sv ? "Hela beloppet" : "Full amount"}
+              {sv ? "Allt" : "All"}
             </button>
           </div>
           <input
             type="range"
-            min="0"
-            max={max}
-            value={Math.min(bakeAmount, max)}
-            onChange={(e) => setBakeAmount(+e.target.value)}
-            className="mt-5 h-3 w-full cursor-pointer appearance-none rounded-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 accent-white"
+            aria-label={t.baked}
+            min={0}
+            max={sliderMax}
+            step={1000}
+            value={Math.min(bakeAmount, sliderMax)}
+            onChange={(e) => setBakeAmount(Number(e.target.value))}
+            className="range mt-4 w-full"
+            style={
+              {
+                "--fill": `${(Math.min(bakeAmount, sliderMax) / sliderMax) * 100}%`,
+              } as React.CSSProperties
+            }
           />
-          <p className="mt-3 text-sm text-white/65">
+          <p className="mt-2 text-sm text-white/65">
             {sv ? "Baka in" : "Bake in"}{" "}
-            {personalTotal ? Math.round((bake.bake / personalTotal) * 100) : 0}%
-            = <b className="text-white">{money(bake.bake, lang)}</b>
+            {personalTotal ? Math.round((bake.bake / personalTotal) * 100) : 0}% ={" "}
+            <b className="text-white">{money(bake.bake, lang)}</b>
           </p>
-          <div className="mt-7 rounded-[20px] bg-black/15 p-6">
-            <div className="flex justify-between">
-              <span>{t.newLtv}</span>
-              <b className="text-4xl" style={{ color }}>
+
+          <div className="mt-6 rounded-2xl border border-white/[.06] bg-black/20 p-5">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm text-white/65">{t.newLtv}</span>
+              <b className="text-3xl md:text-4xl" style={{ color }}>
                 {(bake.ltvAfter * 100).toFixed(1)}%
               </b>
             </div>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/5">
+              <div
+                className="h-full rounded-full transition-all"
+                style={{
+                  width: `${Math.min(bake.ltvAfter * 100, 100)}%`,
+                  background: color,
+                }}
+              />
+            </div>
+            <p className="mt-3 text-xs text-white/55">
+              {bandLabel(bake.bandAfter)}
+              {bake.amortKrDelta > 1
+                ? ` \u00b7 ${sv ? "amortering" : "amortisation"} +${money(bake.amortKrDelta, lang)}/${sv ? "m\u00e5n" : "mo"}`
+                : ""}
+            </p>
           </div>
-          {bake.warningLtv && (
-            <div className="mt-4 flex gap-3 rounded-[20px] border border-red-500/35 bg-red-500/10 p-4 text-sm text-red-300">
-              <ShieldAlert size={19} />
-              {t.denied}
+          {bake.warningText && (
+            <div className="mt-4 flex items-start gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+              <ShieldAlert size={18} className="mt-0.5 shrink-0" />
+              <span>{bake.warningText}</span>
             </div>
           )}
         </div>
-        <div className="space-y-4">
-          <Stat label={t.newMonthly} value={money(bake.monthAfter, lang)} />
-          <Stat label={t.newDate} value={month(refinanceDate, lang)} />
-          <Stat
-            label={sv ? "Sparad tid" : "Time saved"}
-            value={`${savedMonths} ${sv ? "mån" : "months"}`}
-          />
-          <div className="card p-6">
-            <span className="text-sm text-white/65">{t.saved}</span>
-            <div className="mt-3 text-4xl font-semibold text-emerald-300">
-              <CountUp value={Math.max(0, bake.interestSavedNet)} lang={lang} />
+
+        <div className="space-y-3">
+          <div className="card p-5">
+            <div className="text-xs font-semibold uppercase tracking-[.14em] text-white/55">
+              {sv ? "Vad g\u00f6r du med pengarna?" : "What do you do with the money?"}
             </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              {(
+                [
+                  {
+                    key: "keepPaying" as const,
+                    label: sv ? "Betala som idag" : "Keep paying",
+                  },
+                  {
+                    key: "minimumPayment" as const,
+                    label: sv ? "S\u00e4nk kostnaden" : "Lower the cost",
+                  },
+                ]
+              ).map((option) => (
+                <button
+                  key={option.key}
+                  onClick={() => setChoice(option.key)}
+                  aria-pressed={choice === option.key}
+                  className={`min-h-[44px] rounded-xl px-3 text-xs font-medium transition ${
+                    choice === option.key
+                      ? "bg-white/[.14] text-white"
+                      : "bg-white/[.04] text-white/60 hover:bg-white/[.08]"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-3 text-xs leading-5 text-white/65">
+              {choice === "keepPaying"
+                ? sv
+                  ? "Du forts\u00e4tter betala lika mycket varje m\u00e5nad. Det som blir \u00f6ver n\u00e4r blancol\u00e5net krympt g\u00e5r till bol\u00e5net."
+                  : "You keep paying the same each month. What is left over goes to the mortgage."
+                : sv
+                  ? "Du s\u00e4nker till lagkravet p\u00e5 amortering plus r\u00e4nta. Billigare i m\u00e5naden \u2014 dyrare totalt."
+                  : "You drop to the required amortisation plus interest. Cheaper monthly \u2014 more expensive in total."}
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+            <div className="card p-5">
+              <span className="text-sm text-white/65">{t.newMonthly}</span>
+              <div className="mt-2 text-3xl font-semibold">
+                {money(scenario.monthlyPayment, lang)}
+              </div>
+              <p
+                className={`mt-2 text-xs ${scenario.monthlyDelta <= 0 ? "text-emerald-400" : "text-orange-400"}`}
+              >
+                {scenario.monthlyDelta === 0
+                  ? sv
+                    ? "Samma som idag"
+                    : "Same as today"
+                  : `${scenario.monthlyDelta < 0 ? "\u2212" : "+"}${money(Math.abs(scenario.monthlyDelta), lang)} / ${sv ? "m\u00e5n" : "mo"}`}
+              </p>
+            </div>
+            <div className="card p-5">
+              <span className="text-sm text-white/65">{t.newDate}</span>
+              <div className="mt-2 text-3xl font-semibold">
+                {scenario.feasible ? month(scenario.debtFreeDate, lang) : "\u2014"}
+              </div>
+              <p className="mt-2 text-xs text-white/55">
+                {!scenario.feasible
+                  ? sv
+                    ? "Betalningen t\u00e4cker inte r\u00e4ntan"
+                    : "The payment does not cover the interest"
+                  : monthsEarlier > 0
+                    ? `${duration(monthsEarlier, lang)} ${sv ? "tidigare \u00e4n idag" : "earlier than today"}`
+                    : sv
+                      ? `Idag: ${month(bake.todayDebtFreeDate, lang)}`
+                      : `Today: ${month(bake.todayDebtFreeDate, lang)}`}
+              </p>
+            </div>
+          </div>
+
+          <div className="card p-5">
+            <span className="text-sm text-white/65">
+              {scenario.interestSavedNet >= 0
+                ? sv
+                  ? "Sparad r\u00e4nta efter avdrag"
+                  : "Interest saved after deduction"
+                : sv
+                  ? "Extra r\u00e4nta efter avdrag"
+                  : "Extra interest after deduction"}
+            </span>
+            <div
+              className={`mt-2 text-3xl font-semibold ${scenario.interestSavedNet >= 0 ? "text-emerald-300" : "text-orange-300"}`}
+            >
+              {scenario.feasible ? (
+                <CountUp value={Math.abs(scenario.interestSavedNet)} lang={lang} />
+              ) : (
+                "\u2014"
+              )}
+            </div>
+            <p className="mt-3 text-xs leading-5 text-white/55">
+              {sv
+                ? "Bol\u00e5ner\u00e4nta \u00e4r avdragsgill, blancor\u00e4nta i praktiken inte. Siffran \u00e4r r\u00e4knad per l\u00e5netyp."
+                : "Mortgage interest is deductible, unsecured interest in practice is not. Calculated per loan type."}
+            </p>
           </div>
         </div>
       </div>

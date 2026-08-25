@@ -60,19 +60,21 @@ function NumberInput({
   max?: number;
 }) {
   return (
-    <label className="rounded-2xl border border-white/[.06] bg-black/10 p-3">
-      <small className="block uppercase tracking-wider text-white/55">
+    <label className="block rounded-xl border border-white/[.06] bg-black/15 px-3 py-2 transition focus-within:border-blue-400/30">
+      <small className="block truncate text-[10px] uppercase tracking-[.12em] text-white/50">
         {label}
       </small>
-      <span className="mt-1 flex h-7 items-center gap-1">
+      <span className="flex items-baseline gap-1">
         <input
           spellCheck={false}
           inputMode="decimal"
           value={decimal ? formatRate(value, lang) : formatNumber(value, lang)}
           onChange={(event) => onChange(parseNumber(event.target.value, max))}
-          className="w-full bg-transparent text-base outline-none"
+          className="w-full min-w-0 bg-transparent py-0.5 text-[17px] tabular-nums outline-none"
         />
-        {suffix ? <span className="text-xs text-white/55">{suffix}</span> : null}
+        {suffix ? (
+          <span className="shrink-0 text-xs text-white/50">{suffix}</span>
+        ) : null}
       </span>
     </label>
   );
@@ -140,7 +142,7 @@ export function TimeBoxControl({
           }
           className="accent-blue-500"
         />
-        {sv ? "Kör denna strategi i:" : "Run this strategy for:"}
+        {sv ? "Ge det här lånet full kraft i högst" : "Give this debt full force for at most"}
       </label>
       {value.enabled ? (
         <>
@@ -156,9 +158,11 @@ export function TimeBoxControl({
             }
             className="h-8 w-20 rounded-lg border border-white/[.08] bg-white/[.04] px-2 text-white outline-none"
           />
-          <span>{sv ? "Månader" : "Months"}</span>
-          <span className="text-white/55">
-            {sv ? "sedan flyttas resten sist" : "then the remainder moves last"}
+          <span>{sv ? "mån" : "months"}</span>
+          <span className="text-white/45">
+            {sv
+              ? "— sedan går pengarna vidare och lånet hamnar sist i kön"
+              : "— then the money moves on and this debt goes last in line"}
           </span>
         </>
       ) : null}
@@ -176,24 +180,38 @@ export function LeasingLoanFields({
   onChange: (value: LeasingTerms) => void;
 }) {
   const sv = lang === "sv";
+  /**
+   * Leasing jämförs med att köpa samma bil och behålla den lika länge.
+   *
+   * Köpets nettokostnad är inköpspris minus restvärde plus räntan — det du
+   * betalat minus det du har kvar. Kontantinsatsen syns inte som en egen post
+   * eftersom den ingår i inköpspriset; den påverkar bara hur mycket som
+   * behöver lånas, och därmed räntan.
+   *
+   * Räntan räknas på det genomsnittliga saldot. Tidigare räknades full ränta
+   * på hela lånet varje månad trots att det amorteras ner mot restvärdet, och
+   * jämförelsen ställdes dessutom mot en köpkostnad som räntan inte ingick i.
+   * Leasing såg därför dyrare ut i en ruta och billigare i nästa.
+   */
   const calculation = useMemo(() => {
     const months = new Big(Math.max(1, value.months));
     const monthly = new Big(Math.max(0, value.monthlyCost));
     const buyPrice = new Big(Math.max(0, value.buyPrice));
-    const downPayment = new Big(Math.max(0, value.downPayment));
-    const residual = new Big(Math.max(0, value.residualValue));
+    const downPayment = new Big(Math.min(Math.max(0, value.downPayment), Math.max(0, value.buyPrice)));
+    const residual = new Big(Math.min(Math.max(0, value.residualValue), Math.max(0, value.buyPrice)));
     const financed = buyPrice.minus(downPayment);
-    const buyNet = financed.minus(residual);
-    const effectiveRate = new Big(value.buyRate)
-      .plus(value.rateIncrease)
-      .div(100)
-      .div(12);
+    const annualRate = new Big(Math.max(0, value.buyRate + value.rateIncrease)).div(100);
+    const averageBalance = financed.plus(
+      residual.lt(financed) ? residual : financed,
+    ).div(2);
+    const interest = averageBalance.times(annualRate).times(months).div(12);
+    const buyNet = buyPrice.minus(residual).plus(interest);
     const leasingTotal = monthly.times(months);
-    const buyMonthly = buyNet.div(months).plus(financed.times(effectiveRate));
     return {
       leasingTotal,
       buyNet,
-      buyMonthly,
+      buyInterest: interest,
+      buyMonthly: buyNet.div(months),
       diff: leasingTotal.minus(buyNet),
     };
   }, [value]);
@@ -300,18 +318,45 @@ export function LeasingLoanFields({
 
       <div className="mt-4 grid gap-2 text-sm sm:grid-cols-3">
         <div className="rounded-xl bg-white/[.035] p-3">
-          <span className="text-white/65">{sv ? "Total hyrkostnad" : "Total lease cost"}</span>
-          <b className="mt-1 block">{formatBig(calculation.leasingTotal, lang)} kr</b>
+          <span className="text-xs text-white/60">
+            {sv ? "Leasing totalt" : "Total lease cost"}
+          </span>
+          <b className="mt-1 block tabular-nums">
+            {formatBig(calculation.leasingTotal, lang)} kr
+          </b>
         </div>
         <div className="rounded-xl bg-white/[.035] p-3">
-          <span className="text-white/65">{sv ? "Månad om köp" : "Monthly if buying"}</span>
-          <b className="mt-1 block">{formatBig(calculation.buyMonthly, lang)} kr</b>
-        </div>
-        <div className={`rounded-xl p-3 ${calculation.diff.gt(0) ? "bg-orange-500/10 text-orange-200" : "bg-emerald-500/10 text-emerald-200"}`}>
-          <span className="opacity-65">Leasing</span>
-          <b className="mt-1 block">
-            {formatBig(calculation.diff.abs(), lang)} kr {calculation.diff.gt(0) ? (sv ? "dyrare" : "more") : sv ? "billigare" : "less"}
+          <span className="text-xs text-white/60">
+            {sv ? "Köpa och behålla" : "Buy and keep"}
+          </span>
+          <b className="mt-1 block tabular-nums">
+            {formatBig(calculation.buyNet, lang)} kr
           </b>
+          <span className="mt-0.5 block text-[11px] text-white/45">
+            {formatBig(calculation.buyMonthly, lang)} kr/{sv ? "mån" : "mo"} ·{" "}
+            {sv ? "varav ränta" : "of which interest"}{" "}
+            {formatBig(calculation.buyInterest, lang)} kr
+          </span>
+        </div>
+        <div
+          className={`rounded-xl p-3 ${calculation.diff.gt(0) ? "bg-orange-500/10 text-orange-200" : "bg-emerald-500/10 text-emerald-200"}`}
+        >
+          <span className="text-xs opacity-70">Leasing</span>
+          <b className="mt-1 block tabular-nums">
+            {formatBig(calculation.diff.abs(), lang)} kr{" "}
+            {calculation.diff.gt(0)
+              ? sv
+                ? "dyrare"
+                : "more"
+              : sv
+                ? "billigare"
+                : "less"}
+          </b>
+          <span className="mt-0.5 block text-[11px] opacity-60">
+            {sv
+              ? `över ${value.months} mån · bilen är inte din efteråt`
+              : `over ${value.months} months · you do not own the car`}
+          </span>
         </div>
       </div>
     </div>
@@ -351,7 +396,15 @@ export function CreditLoanMetrics({
       );
       payoffMonths++;
     }
-    return { interest, amortization, share, payoffMonths };
+    // Loopen kan avbrytas med skuld kvar. Utan den här flaggan visades ändå
+    // "skuldfri om X mån" för ett lån som aldrig blir betalt.
+    return {
+      interest,
+      amortization,
+      share,
+      payoffMonths,
+      paysOff: payoffBalance.lte(0),
+    };
   }, [balance, interestRate, monthlyPayment, paymentStyle]);
 
   const interestText = formatBig(calculation.interest, lang);
@@ -366,9 +419,9 @@ export function CreditLoanMetrics({
         · {sv ? "Amortering" : "Principal"}: {amortizationText} kr
         <br />
         {sv
-          ? `Av dina ${formatNumber(monthlyPayment, lang)} kr går ${interestText} kr till ränta. Endast ${amortizationText} kr betalar av skulden. Du betalar ${shareText} % ränta.`
-          : `Of SEK ${formatNumber(monthlyPayment, lang)}, SEK ${interestText} goes to interest. Only SEK ${amortizationText} reduces the debt. ${shareText}% is interest.`}
-        {calculation.amortization.gt(0) && calculation.payoffMonths < 600 ? (
+          ? `Av dina ${formatNumber(monthlyPayment, lang)} kr går ${interestText} kr till ränta — ${shareText} % av betalningen. Bara ${amortizationText} kr minskar skulden.`
+          : `Of SEK ${formatNumber(monthlyPayment, lang)}, SEK ${interestText} goes to interest — ${shareText}% of the payment. Only SEK ${amortizationText} reduces the debt.`}
+        {calculation.paysOff ? (
           <span className="mt-1 block text-blue-300">
             {sv ? "Skuldfri om cirka" : "Debt-free in about"} {calculation.payoffMonths} {sv ? "mån" : "months"}
           </span>
