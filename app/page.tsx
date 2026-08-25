@@ -533,10 +533,10 @@ export default function Page() {
         name: loan.name,
         balance: loan.balance,
         interestRate: loan.interestRate,
-        monthlyPayment: loan.currentMonthlyPayment + (loan.extraMonthly || 0),
+        monthlyPayment: loan.currentMonthlyPayment,
         paymentStyle: loan.paymentStyle,
         extraMonthly: loan.extraMonthly,
-        extraMonthlyEnabled: (loan.extraMonthly || 0) > 0,
+        extraMonthlyEnabled: loan.extraMonthlyEnabled,
         reinvestment: loan.reinvestment,
       }));
 
