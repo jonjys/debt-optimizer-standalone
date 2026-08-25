@@ -25,7 +25,15 @@ import type { LoanPaymentStyle, OneTimePayment, PayoffStrategy } from "./types";
  * motorn — aldrig mitt i en simulering och aldrig tillbaka in i loopen.
  */
 
-export const MAX_MONTHS = 600;
+/**
+ * Taket för hur långt en plan får sträcka sig.
+ *
+ * 600 månader var för snålt: ett svenskt bolån med det lagstadgade
+ * amorteringskravet på 2 % tar exakt 600 månader att betala av, och hamnade
+ * därmed precis på gränsen och rapporterades som "går inte ihop". 720 ger
+ * marginal för det utan att låtsas att vad som helst går att betala av.
+ */
+export const MAX_MONTHS = 720;
 
 export interface PlanLoan {
   id: string;

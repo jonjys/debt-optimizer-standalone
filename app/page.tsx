@@ -709,8 +709,8 @@ export default function Page() {
       if (current.length === 0) {
         setToast(
           lang === "sv"
-            ? "🎉 Bra! Lägg till fler eller klicka Fyll exempel"
-            : "🎉 Nice! Add more or load the sample",
+            ? "Fyll i dina egna siffror — resultatet uppdateras direkt"
+            : "Fill in your own numbers — the result updates as you type",
         );
         window.setTimeout(() => setToast(null), 3200);
       }
@@ -734,27 +734,15 @@ export default function Page() {
       ];
     });
   };
-  const scrollToApp = () =>
-    requestAnimationFrame(() =>
-      appRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
-    );
+  const [pendingScroll, setPendingScroll] = useState(false);
+  const scrollToApp = () => setPendingScroll(true);
+  useEffect(() => {
+    if (!pendingScroll || !appRef.current) return;
+    appRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    setPendingScroll(false);
+  }, [pendingScroll, loans.length, started]);
   const startFree = () => {
-    if (!loans.length) {
-      const first = {
-        ...initialLoans[0],
-        name: lang === "sv" ? "Bolån" : "Mortgage",
-        extraMonthly: 0,
-      };
-      setLoans([first]);
-      setLoanKinds({ mortgage: "mortgage" });
-      setAmortKinds({ mortgage: "fixed_amort" });
-      setToast(
-        lang === "sv"
-          ? "🎉 Bra! Lägg till fler eller klicka Fyll exempel"
-          : "🎉 Nice! Add more or load the sample",
-      );
-      window.setTimeout(() => setToast(null), 3200);
-    }
+    if (!loans.length) addDebt();
     setStarted(true);
     scrollToApp();
   };
@@ -892,19 +880,21 @@ export default function Page() {
           {toast}
         </div>
       )}
-      <footer className="mx-auto max-w-[680px] px-5 pb-28 pt-10 text-center text-[12px] leading-5 text-white/50 md:pb-10">
+      {/* Den långa ansvarstexten hör hemma där siffrorna står, inte som det
+          första en ny besökare möts av. På startsidan räcker en rad. */}
+      <footer className="mx-auto max-w-[680px] px-5 pb-28 pt-8 text-center text-[12px] leading-5 text-white/45 md:pb-10">
         <p>
           {lang === "sv"
-            ? "All matematik körs i din webbläsare. Ingen spårning, ingen kostnad, inget konto. Dina lån sparas bara på den här enheten."
-            : "All math runs in your browser. No tracking, no cost, no account. Your debts are stored only on this device."}
+            ? "All matematik körs i din webbläsare. Ingen spårning, ingen kostnad, inget konto."
+            : "All math runs in your browser. No tracking, no cost, no account."}
         </p>
-        {/* Appen räknar på amorteringskrav och ränteavdrag — regler som ändras
-            mellan åren. Siffrorna är en uppskattning, inte ett besked. */}
-        <p className="mt-3 text-white/35">
-          {lang === "sv"
-            ? "Siffrorna är uppskattningar baserade på det du fyller i, inte finansiell rådgivning. Amorteringskrav och ränteavdrag ändras — stäm av med din bank och Skatteverket innan du bestämmer dig."
-            : "The figures are estimates based on what you enter, not financial advice. Amortisation rules and interest deductions change — check with your bank before deciding."}
-        </p>
+        {started ? (
+          <p className="mt-3 text-white/30">
+            {lang === "sv"
+              ? "Siffrorna är uppskattningar baserade på det du fyller i, inte finansiell rådgivning. Amorteringskrav och ränteavdrag ändras — stäm av med din bank och Skatteverket innan du bestämmer dig."
+              : "The figures are estimates based on what you enter, not financial advice. Amortisation rules and interest deductions change — check with your bank before deciding."}
+          </p>
+        ) : null}
       </footer>
     </div>
   );
@@ -1104,9 +1094,9 @@ function ResultSidebar({
                     {month(x.endDate, lang)}
                   </>
                 ) : sv ? (
-                  "Över 50 år"
+                  "Över 60 år"
                 ) : (
-                  "Over 50 years"
+                  "Over 60 years"
                 )}
               </span>
             </div>
@@ -1149,6 +1139,15 @@ function ResultSidebar({
 
 
 
+/**
+ * Startsidan.
+ *
+ * Den förklarade tidigare vad appen gör i tre stycken text innan man fick se
+ * någonting. En kalkylator säljs inte med en beskrivning utan med ett svar,
+ * så det första man ser är nu ett riktigt resultat: ett datum och vad räntan
+ * kostar. Siffrorna kommer ur samma motor som resten av appen och är märkta
+ * som ett exempel.
+ */
 function Landing({
   lang,
   onStart,
@@ -1159,51 +1158,144 @@ function Landing({
   onSample: () => void;
 }) {
   const sv = lang === "sv";
+  // Ett vanligt blancolån, räknat på riktigt — inte en påhittad siffra.
+  const demo = useMemo(() => {
+    const loan = {
+      id: "demo",
+      name: "demo",
+      balance: 180_000,
+      interestRate: 0.085,
+      paymentStyle: "annuity" as const,
+      monthlyPayment: 3_900,
+    };
+    const plain = simulatePlan({
+      loans: [loan],
+      strategy: "custom",
+      startDate: START,
+      oneTimePayments: [],
+      rollover: false,
+    }).loans[0];
+    const boosted = simulatePlan({
+      loans: [{ ...loan, extraMonthlyEnabled: true, extraMonthly: 1_500 }],
+      strategy: "custom",
+      startDate: START,
+      oneTimePayments: [],
+      rollover: false,
+    }).loans[0];
+    return {
+      plain,
+      boosted,
+      monthsSaved: Math.max(0, plain.finishMonth! - boosted.finishMonth!),
+      interestSaved: Math.max(0, plain.totalInterest - boosted.totalInterest),
+    };
+  }, []);
+
   return (
-    <main className="relative mx-auto flex min-h-[60vh] max-w-[1180px] items-center justify-center overflow-hidden px-5 py-20 text-center md:min-h-[680px] md:px-10">
-      <div className="pointer-events-none absolute left-1/2 top-[44%] h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gradient-to-br from-blue-500/20 via-violet-500/10 to-emerald-400/15 blur-[60px]" />
-      <div className="relative z-10 flex flex-col items-center">
-        <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-white/[.08] bg-white/[.06] px-4 py-1.5 text-[12px] tracking-[.4px] text-white/55">
-          <LockKeyhole size={12} className="shrink-0" />
-          {sv
-            ? "Ingen registrering · Helt privat · Fungerar offline"
-            : "No signup · Fully private · Works offline"}
-        </div>
-        <h1 className="max-w-[760px] text-[34px] font-bold leading-[1.08] tracking-[-.045em] sm:text-[42px] md:text-[56px] md:leading-[1.05]">
+    <main className="relative mx-auto flex max-w-[1180px] flex-col items-center px-5 pb-8 pt-10 text-center md:px-10 md:pb-14 md:pt-16">
+      <div className="pointer-events-none absolute left-1/2 top-24 h-[420px] w-[420px] -translate-x-1/2 rounded-full bg-gradient-to-br from-blue-500/20 via-violet-500/10 to-emerald-400/15 blur-[70px]" />
+      <div className="relative z-10 flex w-full flex-col items-center">
+        <h1 className="max-w-[720px] text-[36px] font-bold leading-[1.06] tracking-[-.045em] sm:text-[46px] md:text-[60px]">
           {sv ? "Se exakt när dina skulder är " : "See exactly when your debts are "}
           <span className="relative inline-block -rotate-1 rounded-[12px] bg-gradient-to-r from-[#3B82F6] to-[#10B981] px-3 py-0 text-white shadow-[0_14px_40px_rgba(16,185,129,.15)]">
             {sv ? "borta" : "gone"}
           </span>
         </h1>
-        <p className="mt-6 max-w-[640px] text-[17px] leading-7 text-white/60 md:mt-7 md:text-[18px] md:leading-8">
+        <p className="mt-5 max-w-[440px] text-[17px] leading-7 text-white/55">
           {sv
-            ? "Dina siffror, din ordning, ditt datum. Vilket lån som helst och vilken ränta som helst — allt räknas ut i din webbläsare."
-            : "Your numbers, your order, your date. Any loan at any rate — all calculated in your browser."}
+            ? "Lägg in dina lån. Se datumet, räntan och vad en extra hundralapp gör."
+            : "Add your debts. See the date, the interest, and what an extra hundred does."}
         </p>
-        <div className="mt-8 flex w-full flex-col justify-center gap-3 sm:w-auto sm:flex-row">
+
+        {/* Ett riktigt räkneexempel i stället för en beskrivning av ett. */}
+        <div className="card mt-9 w-full max-w-[420px] p-5 text-left">
+          <div className="text-[11px] uppercase tracking-[.14em] text-white/40">
+            {sv ? "Exempel · blancolån 180 000 kr" : "Example · SEK 180,000 loan"}
+          </div>
+          <div className="mt-4 space-y-3">
+            <DemoRow
+              label={sv ? "3 900 kr/mån" : "SEK 3,900/mo"}
+              date={month(demo.plain.endDate, lang)}
+              note={`${sv ? "ränta" : "interest"} ${money(demo.plain.totalInterest, lang)}`}
+              width={100}
+              tone="plain"
+            />
+            <DemoRow
+              label={sv ? "+ 1 500 kr extra" : "+ SEK 1,500 extra"}
+              date={month(demo.boosted.endDate, lang)}
+              note={`${sv ? "ränta" : "interest"} ${money(demo.boosted.totalInterest, lang)}`}
+              width={Math.round(
+                (demo.boosted.finishMonth! / demo.plain.finishMonth!) * 100,
+              )}
+              tone="boosted"
+            />
+          </div>
+          <p className="mt-4 border-t border-white/[.06] pt-3 text-sm text-emerald-300">
+            {sv
+              ? `${duration(demo.monthsSaved, lang)} tidigare · ${money(demo.interestSaved, lang)} mindre i ränta`
+              : `${duration(demo.monthsSaved, lang)} earlier · ${money(demo.interestSaved, lang)} less interest`}
+          </p>
+        </div>
+
+        <div className="mt-8 flex w-full max-w-[420px] flex-col gap-3">
           <button
             onClick={onStart}
-            className="inline-flex h-13 min-h-[52px] w-full items-center justify-center rounded-xl bg-white px-7 text-base font-semibold text-[#06060A] shadow-[0_0_35px_rgba(59,130,246,.25)] transition hover:-translate-y-0.5 hover:shadow-2xl sm:w-auto"
+            className="inline-flex min-h-[54px] w-full items-center justify-center rounded-xl bg-white px-7 text-base font-semibold text-[#06060A] shadow-[0_0_35px_rgba(59,130,246,.25)] transition hover:-translate-y-0.5 hover:shadow-2xl"
           >
-            {sv ? "Lägg till ditt första lån" : "Add your first loan"}
+            {sv ? "Räkna på mina lån" : "Run my own numbers"}
           </button>
           <button
             id="fill-sample"
             onClick={onSample}
-            className="inline-flex min-h-[52px] w-full items-center justify-center rounded-xl border border-white/[.12] px-6 text-base font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/[.05] sm:w-auto"
+            className="inline-flex min-h-[48px] w-full items-center justify-center rounded-xl text-sm font-medium text-white/60 transition hover:text-white"
           >
-            {sv ? "Fyll exempel" : "Fill sample data"}
+            {sv ? "Eller titta på ett färdigt exempel" : "Or open a filled-in example"}
           </button>
         </div>
-        <div className="mt-10 max-w-[420px] text-[11px] font-medium uppercase tracking-[1.6px] text-white/45 md:mt-12 md:max-w-none md:text-[12px]">
+
+        <div className="mt-10 flex items-center gap-2 text-[12px] text-white/40">
+          <LockKeyhole size={12} className="shrink-0" />
           {sv
-            ? "Bolån · Blancolån · Kreditkort · Billån · CSN · Leasing · Avbetalning"
-            : "Mortgage · Personal · Credit card · Car · Student · Leasing · Instalments"}
+            ? "Ingen registrering · Inget sparas hos oss · Fungerar offline"
+            : "No signup · Nothing stored with us · Works offline"}
         </div>
       </div>
     </main>
   );
 }
+
+/** En rad i startsidans räkneexempel: stapel, datum och ränta. */
+function DemoRow({
+  label,
+  date,
+  note,
+  width,
+  tone,
+}: {
+  label: string;
+  date: string;
+  note: string;
+  width: number;
+  tone: "plain" | "boosted";
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-3 text-sm">
+        <span className={tone === "boosted" ? "text-white" : "text-white/60"}>
+          {label}
+        </span>
+        <b className="tabular-nums">{date}</b>
+      </div>
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[.06]">
+        <div
+          className={`h-full rounded-full ${tone === "boosted" ? "bg-gradient-to-r from-blue-400 to-emerald-400" : "bg-white/20"}`}
+          style={{ width: `${Math.max(6, Math.min(100, width))}%` }}
+        />
+      </div>
+      <div className="mt-1 text-[11px] text-white/40">{note}</div>
+    </div>
+  );
+}
+
 function Title({
   eyebrow,
   title,
@@ -1346,8 +1438,14 @@ function MobileBar({
             <span className="block text-[10px] uppercase tracking-[.12em] text-white/45">
               {t.free}
             </span>
-            <b className="block truncate text-[15px] leading-tight">
-              {plan.fullyPaid ? month(plan.freedomDate, lang) : "—"}
+            <b
+              className={`block truncate text-[15px] leading-tight ${plan.fullyPaid ? "" : "text-orange-300"}`}
+            >
+              {plan.fullyPaid
+                ? month(plan.freedomDate, lang)
+                : lang === "sv"
+                  ? "Betalningen är för låg"
+                  : "Payment too low"}
             </b>
           </span>
           <span className="shrink-0 text-right">
@@ -2446,8 +2544,8 @@ function TodayV5({
                             <p className="mt-3 rounded-xl border border-orange-500/25 bg-orange-500/10 p-3 text-xs text-orange-200">
                               ⚠️{" "}
                               {sv
-                                ? "Planen tar längre än 50 år. Höj månadsbetalningen."
-                                : "This plan takes longer than 50 years. Increase the monthly payment."}
+                                ? "Planen tar längre än 60 år. Höj månadsbetalningen."
+                                : "This plan takes longer than 60 years. Increase the monthly payment."}
                             </p>
                           ) : null}
 
@@ -2456,8 +2554,8 @@ function TodayV5({
                               {planLoan.fullyPaid
                                 ? `${sv ? "Klart" : "Done"} ${month(planLoan.endDate, lang)} · ${describePace(planLoan, lang)}`
                                 : sv
-                                  ? "Inte skuldfri inom 50 år med nuvarande betalning"
-                                  : "Not debt-free within 50 years at this payment"}
+                                  ? "Inte skuldfri inom 60 år med nuvarande betalning"
+                                  : "Not debt-free within 60 years at this payment"}
                             </div>
                           ) : null}
 

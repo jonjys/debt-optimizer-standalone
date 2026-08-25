@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  MAX_MONTHS,
   simulatePlan,
   simulateLoanAlone,
   addMonths,
@@ -525,7 +526,7 @@ describe("canonical motor", () => {
       });
 
       expect(plan.fullyPaid).toBe(false);
-      expect(plan.totalMonths).toBe(600); // MAX_MONTHS
+      expect(plan.totalMonths).toBe(MAX_MONTHS);
     });
   });
 
