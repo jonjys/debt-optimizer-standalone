@@ -1997,7 +1997,9 @@ function TodayV5({
             </button>
           }
         />
-        <div className="-mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] md:mx-0 md:flex-wrap md:overflow-visible md:px-0">
+        {/* Scrollrad på mobil. Utan tonad kant ser raden ut att sluta vid
+            skärmkanten, och de sista lånetyperna hittas aldrig. */}
+        <div className="scroll-fade -mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] md:mx-0 md:flex-wrap md:overflow-visible md:px-0 md:[mask-image:none]">
           {(
             [
               "mortgage",

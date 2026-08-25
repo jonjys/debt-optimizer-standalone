@@ -105,3 +105,25 @@ input[type="range"].range::-moz-range-track {
     rgba(255, 255, 255, 0.1) 100%
   );
 }
+
+/* Tonad högerkant på vågräta scrollrader, så att det syns att raden
+   fortsätter utanför skärmen. */
+.scroll-fade {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 1rem,
+    #000 calc(100% - 2rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 1rem,
+    #000 calc(100% - 2rem),
+    transparent 100%
+  );
+}
+.scroll-fade::-webkit-scrollbar {
+  display: none;
+}
