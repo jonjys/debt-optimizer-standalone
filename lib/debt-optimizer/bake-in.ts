@@ -54,6 +54,14 @@ export interface BakeInInput {
   personalMonths?: number;
   /** YYYY-MM som scenariernas slutdatum räknas från. */
   startDate?: string;
+  /**
+   * Vad användaren faktiskt betalar idag. Utan dem antas lagkravet på
+   * amortering för bolånet och en 10-årig annuitet för blancolånet, vilket
+   * sällan är vad någon betalar — och då jämför "betala som idag" mot något
+   * annat än idag.
+   */
+  mortgageMonthlyPayment?: number;
+  personalMonthlyPayment?: number;
 }
 
 export interface BakeInScenario {
@@ -66,8 +74,13 @@ export interface BakeInScenario {
   /** Går skulden att betala av inom taket? */
   feasible: boolean;
   totalInterest: number;
-  interestSavedGross: number;
-  interestSavedNet: number;
+  /**
+   * Skillnad mot dagens ränta. `null` när jämförelsen inte är meningsfull —
+   * antingen för att scenariot inte går ihop eller för att dagens betalning
+   * inte gör det. Att svara med en siffra ändå ger fel tecken.
+   */
+  interestSavedGross: number | null;
+  interestSavedNet: number | null;
 }
 
 export interface BakeInResult {
@@ -102,6 +115,8 @@ export interface BakeInResult {
   todayMonthly: number;
   todayMonths: number;
   todayDebtFreeDate: string;
+  /** Går dagens upplägg över huvud taget ihop? */
+  todayFeasible: boolean;
   /**
    * Inbakningen har två helt olika utfall beroende på vad du gör med
    * pengarna du frigör. Att bara visa ett av dem gör affären antingen
@@ -193,7 +208,14 @@ function payOff(
   if (balance <= 0) return { months: 0, totalInterest: 0, feasible: true };
   const monthlyRate = annualRate / 12;
   if (monthlyPayment <= balance * monthlyRate)
-    return { months: MAX_SCENARIO_MONTHS, totalInterest: 0, feasible: false };
+    // Räntan täcks inte, så skulden växer. Noll ränta hade varit det mest
+    // missvisande svaret av alla: den siffran drog ner dagens totalkostnad
+    // och vände tecknet på hela besparingen.
+    return {
+      months: MAX_SCENARIO_MONTHS,
+      totalInterest: Number.POSITIVE_INFINITY,
+      feasible: false,
+    };
   let remaining = balance;
   let interest = 0;
   let months = 0;
@@ -238,10 +260,29 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
   const interestMortMonthBefore = (input.mortgage * input.mortgageRate) / 12;
   const interestMortMonthAfter = (newMortgage * input.mortgageRate) / 12;
 
-  const personalMonthBefore = annuity(input.personal, input.personalRate, personalMonths);
-  const personalMonthAfter = annuity(personalLeft, input.personalRate, personalMonths);
+  // Dagens betalning på blancolånet är den användaren angett. Faller vi
+  // tillbaka på en 10-årig annuitet jämförs "betala som idag" mot ett belopp
+  // användaren aldrig betalat.
+  const personalMonthBefore =
+    input.personalMonthlyPayment && input.personalMonthlyPayment > 0
+      ? input.personalMonthlyPayment
+      : annuity(input.personal, input.personalRate, personalMonths);
+  // Efter inbakningen krymper blancolånet. Betalningen skalas ned i samma
+  // takt, men aldrig under vad som krävs för att den ska kunna betalas av.
+  const personalMonthAfter =
+    input.personal > 0
+      ? (personalMonthBefore * personalLeft) / input.personal
+      : 0;
 
-  const monthBefore = amortKrBefore + interestMortMonthBefore + personalMonthBefore;
+  const mortgageMonthBefore =
+    input.mortgageMonthlyPayment && input.mortgageMonthlyPayment > 0
+      ? Math.max(
+          input.mortgageMonthlyPayment,
+          amortKrBefore + interestMortMonthBefore,
+        )
+      : amortKrBefore + interestMortMonthBefore;
+
+  const monthBefore = mortgageMonthBefore + personalMonthBefore;
   const monthAfter = amortKrAfter + interestMortMonthAfter + personalMonthAfter;
 
   const mortIntBefore = mortgageInterestEstimate(input.mortgage, input.mortgageRate, amortBefore, years);
@@ -307,10 +348,18 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
     const feasible = onMortgage.feasible && onPersonal.feasible;
     const months = Math.max(onMortgage.months, onPersonal.months);
     const totalInterest = onMortgage.totalInterest + onPersonal.totalInterest;
+    // Avdragstaket gäller per år, så räntan måste slås ut över det egna
+    // lånets löptid. Med den kombinerade löptiden ser årsräntan lägre ut än
+    // den är och avdraget överskattas.
     const netAfterTax =
-      securedAfterTax(onMortgage.totalInterest, Math.max(1, months / 12)) +
-      unsecuredAfterTax(onPersonal.totalInterest);
+      securedAfterTax(
+        onMortgage.totalInterest,
+        Math.max(1, onMortgage.months / 12),
+      ) + unsecuredAfterTax(onPersonal.totalInterest);
     const monthlyPayment = mortgagePayment + personalPayment;
+    // En jämförelse kräver att båda sidor går att räkna. Går dagens upplägg
+    // inte ihop finns ingen ränta att jämföra mot.
+    const comparable = feasible && todayFeasible;
     return {
       monthlyPayment,
       monthlyDelta: monthlyPayment - monthBefore,
@@ -318,8 +367,8 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
       debtFreeDate: feasible ? addMonthsTo(startDate, months - 1) : "-",
       feasible,
       totalInterest,
-      interestSavedGross: todayTotalInterest - totalInterest,
-      interestSavedNet: todayNet - netAfterTax,
+      interestSavedGross: comparable ? todayTotalInterest - totalInterest : null,
+      interestSavedNet: comparable ? todayNet - netAfterTax : null,
     };
   };
 
@@ -328,20 +377,21 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
   const todayOnMortgage = payOff(
     input.mortgage,
     input.mortgageRate,
-    amortKrBefore + interestMortMonthBefore
+    mortgageMonthBefore
   );
   const todayOnPersonal = payOff(
     input.personal,
     input.personalRate,
     personalMonthBefore
   );
+  const todayFeasible = todayOnMortgage.feasible && todayOnPersonal.feasible;
   const todayMonths = Math.max(todayOnMortgage.months, todayOnPersonal.months);
   const todayTotalInterest =
     todayOnMortgage.totalInterest + todayOnPersonal.totalInterest;
   const todayNet =
     securedAfterTax(
       todayOnMortgage.totalInterest,
-      Math.max(1, todayMonths / 12)
+      Math.max(1, todayOnMortgage.months / 12)
     ) + unsecuredAfterTax(todayOnPersonal.totalInterest);
 
   const minimumMortgagePayment = amortKrAfter + interestMortMonthAfter;
@@ -381,10 +431,10 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
     summaryLine,
     todayMonthly: monthBefore,
     todayMonths,
-    todayDebtFreeDate:
-      todayOnMortgage.feasible && todayOnPersonal.feasible
-        ? addMonthsTo(startDate, todayMonths - 1)
-        : "-",
+    todayFeasible,
+    todayDebtFreeDate: todayFeasible
+      ? addMonthsTo(startDate, todayMonths - 1)
+      : "-",
     scenarios: { keepPaying, minimumPayment },
   };
 }

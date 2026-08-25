@@ -266,8 +266,8 @@ describe("baka in i bolånet", () => {
     expect(result.scenarios.keepPaying.months).toBeLessThan(
       result.scenarios.minimumPayment.months,
     );
-    expect(result.scenarios.keepPaying.interestSavedGross).toBeGreaterThan(
-      result.scenarios.minimumPayment.interestSavedGross,
+    expect(result.scenarios.keepPaying.interestSavedGross!).toBeGreaterThan(
+      result.scenarios.minimumPayment.interestSavedGross!,
     );
   });
 
@@ -301,8 +301,8 @@ describe("baka in i bolånet", () => {
     // Med samma avdragssats på båda sidor försvinner hela poängen med att
     // flytta skulden — eller så överdrivs den.
     const result = calculateBakeIn({ ...base, bakeAmount: 180_000 });
-    expect(result.scenarios.keepPaying.interestSavedNet).not.toBeCloseTo(
-      result.scenarios.keepPaying.interestSavedGross,
+    expect(result.scenarios.keepPaying.interestSavedNet!).not.toBeCloseTo(
+      result.scenarios.keepPaying.interestSavedGross!,
       0,
     );
   });
@@ -315,6 +315,54 @@ describe("baka in i bolånet", () => {
     });
     expect(result.warningLtv).toBe(true);
     expect(result.warningText).toBeTruthy();
+  });
+
+  it("jämför mot vad användaren faktiskt betalar, inte mot en antagen annuitet", () => {
+    // Baslinjen antog en 10-årig annuitet på blancolånet och enbart
+    // lagkravet på bolånet. "Betala som idag" jämfördes då mot ett belopp
+    // användaren aldrig betalat, och skilde sig från siffran i "Mina lån".
+    const withRealPayments = calculateBakeIn({
+      ...base,
+      bakeAmount: 180_000,
+      mortgageMonthlyPayment: 10_900,
+      personalMonthlyPayment: 5_700,
+    });
+    expect(withRealPayments.todayMonthly).toBeCloseTo(16_600, 0);
+    expect(withRealPayments.scenarios.keepPaying.monthlyPayment).toBeCloseTo(
+      16_600,
+      0,
+    );
+  });
+
+  it("låter aldrig bolånets betalning underskrida lagkravet plus ränta", () => {
+    const result = calculateBakeIn({
+      ...base,
+      bakeAmount: 0,
+      mortgageMonthlyPayment: 100,
+    });
+    const legalMinimum =
+      (base.mortgage * 0.02) / 12 + (base.mortgage * base.mortgageRate) / 12;
+    expect(result.todayMonthly).toBeGreaterThanOrEqual(legalMinimum);
+  });
+
+  it("svarar 'går inte att jämföra' i stället för att vända tecknet", () => {
+    // payOff returnerade noll ränta när betalningen inte täckte räntan. Den
+    // nollan drog ner dagens totalkostnad så att en inbakning som sparade
+    // pengar redovisades som en förlust.
+    const result = calculateBakeIn({
+      mortgage: 500_000,
+      mortgageRate: 0.04,
+      personal: 300_000,
+      personalRate: 0.25,
+      personalMonthlyPayment: 100,
+      homeValue: 5_000_000,
+      bakeAmount: 0,
+      startDate: START,
+    });
+    expect(result.todayFeasible).toBe(false);
+    expect(result.todayDebtFreeDate).toBe("-");
+    expect(result.scenarios.keepPaying.interestSavedGross).toBeNull();
+    expect(result.scenarios.keepPaying.interestSavedNet).toBeNull();
   });
 
   it("noll inbakat lämnar allt som det är", () => {

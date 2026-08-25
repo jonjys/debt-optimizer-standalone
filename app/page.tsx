@@ -11,11 +11,7 @@ import {
   type PlanLoanResult,
   type PlanResult,
 } from "@/lib/debt-optimizer/canonical";
-import type {
-  CalculationResult,
-  Loan,
-  PayoffStrategy,
-} from "@/lib/debt-optimizer/types";
+import type { Loan, PayoffStrategy } from "@/lib/debt-optimizer/types";
 import {
   CreditLoanMetrics,
   LeasingLoanFields,
@@ -415,57 +411,6 @@ function CountUp({ value, lang }: { value: number; lang: Lang }) {
   return <>{money(shown, lang)}</>;
 }
 
-// Adapter to convert canonical PlanResult to legacy CalculationResult format
-function planResultToCalculationResult(
-  plan: PlanResult,
-  baseline: PlanResult,
-): CalculationResult {
-  const firstPaidMonths = plan.loans
-    .filter((l) => l.fullyPaid && l.finishMonth !== null)
-    .map((l) => l.finishMonth as number);
-
-  // Create a map of baseline results by loan ID for easy lookup
-  const baselineMap = new Map(baseline.loans.map((l) => [l.id, l]));
-
-  return {
-    totalOriginalInterest: baseline.totalInterest,
-    totalNewInterest: plan.totalInterest,
-    totalInterestSaved: baseline.totalInterest - plan.totalInterest,
-    originalFreedomDate: baseline.freedomDate,
-    newFreedomDate: plan.freedomDate,
-    totalMonthsSaved: Math.max(
-      0,
-      (baseline.fullyPaid ? baseline.totalMonths : 600) -
-        (plan.fullyPaid ? plan.totalMonths : 600),
-    ),
-    firstDebtPaidDate:
-      firstPaidMonths.length > 0
-        ? addMonths(START, Math.min(...firstPaidMonths))
-        : "-",
-    loanResults: plan.loans.map((l) => {
-      const baselineLoan = baselineMap.get(l.id);
-      const baselineEndDate = baselineLoan?.endDate || "-";
-      const baselineInterest = baselineLoan?.totalInterest || 0;
-
-      return {
-        id: l.id,
-        name: l.name,
-        originalEndDate: baselineEndDate,
-        originalTotalInterest: baselineInterest,
-        newEndDate: l.endDate,
-        newTotalInterest: l.totalInterest,
-        interestSaved: baselineInterest - l.totalInterest,
-        monthsSaved: Math.max(
-          0,
-          (baselineLoan?.finishMonth ?? 600) - (l.finishMonth ?? 600),
-        ),
-        payoffOrder: l.order,
-        isFullyAmortizing: l.fullyPaid,
-      };
-    }),
-  };
-}
-
 export default function Page() {
   const [lang, setLang] = useState<Lang>("sv");
   const [tab, setTab] = useState<Tab>("today");
@@ -489,7 +434,6 @@ export default function Page() {
   >({});
   const [timeBoxes, setTimeBoxes] = useState<Record<string, TimeBox>>({});
   const [propertyValue, setPropertyValue] = useState(3_027_201);
-  const [mortgageValue, setMortgageValue] = useState(2_128_112);
   const [bakeAmount, setBakeAmount] = useState(180_000);
   const [toast, setToast] = useState<string | null>(null);
   const appRef = useRef<HTMLDivElement>(null);
@@ -565,32 +509,6 @@ export default function Page() {
   const plan = useMemo(() => runPlan("custom"), [runPlan]);
   const avalanchePlan = useMemo(() => runPlan("avalanche"), [runPlan]);
   const snowballPlan = useMemo(() => runPlan("snowball"), [runPlan]);
-  /**
-   * Baslinjen är "om du inte gjorde någonting": varje lån betalas med sin egen
-   * grundbetalning, utan påslag, utan återinvestering och utan att frigjorda
-   * pengar rullar vidare. Det är den enda ärliga referensen för "sparad ränta".
-   */
-  const baseline = useMemo(
-    () =>
-      simulatePlan({
-        loans: planLoans.map((loan) => ({
-          ...loan,
-          extraMonthlyEnabled: false,
-          targetMonthlyEnabled: false,
-          reinvestment: undefined,
-          timeBoxMonths: undefined,
-        })),
-        strategy: "custom",
-        startDate: START,
-        oneTimePayments: [],
-        rollover: false,
-      }),
-    [planLoans],
-  );
-  const result = useMemo(
-    () => (debtLoans.length ? planResultToCalculationResult(plan, baseline) : null),
-    [debtLoans.length, plan, baseline],
-  );
   const personalTotal = debtLoans
     .filter((x) => loanKinds[x.id] === "personal")
     .reduce((sum, x) => sum + x.balance, 0);
@@ -618,24 +536,51 @@ export default function Page() {
   const refinancePersonal = debtLoans.find(
     (loan) => loanKinds[loan.id] === "personal",
   );
+  /**
+   * Bolånet i "Flytta till bolånet" är samma bolån som i "Mina lån". Saldot
+   * låg tidigare i eget state med ett hårdkodat startvärde medan räntan
+   * hämtades från lånet — så en användare som skrev in sitt eget bolån fick
+   * sin ränta räknad på någon annans skuld.
+   */
+  const mortgageValue = refinanceMortgage?.balance ?? 0;
+  const setMortgageValue = (value: number) => {
+    const safe = Math.min(10_000_000, Math.max(0, value));
+    if (refinanceMortgage) {
+      updateLoan(refinanceMortgage.id, "balance", safe);
+      return;
+    }
+    const id = crypto.randomUUID();
+    setLoanKinds((current) => ({ ...current, [id]: "mortgage" }));
+    setAmortKinds((current) => ({ ...current, [id]: "fixed_amort" }));
+    setLoans((current) => [
+      ...current,
+      { ...initialLoans[0], id, name: LOAN_KINDS.mortgage[lang], balance: safe },
+    ]);
+  };
   const bake = useMemo(
     () =>
       calculateBakeIn({
         mortgage: mortgageValue,
         mortgageRate: refinanceMortgage?.interestRate || 0.041,
+        mortgageMonthlyPayment: refinanceMortgage
+          ? refinanceMortgage.currentMonthlyPayment +
+            (refinanceMortgage.extraMonthlyEnabled === false
+              ? 0
+              : refinanceMortgage.extraMonthly || 0)
+          : undefined,
         personal: personalTotal,
         personalRate: refinancePersonal?.interestRate || 0.085,
+        personalMonthlyPayment: refinancePersonal
+          ? refinancePersonal.currentMonthlyPayment +
+            (refinancePersonal.extraMonthlyEnabled === false
+              ? 0
+              : refinancePersonal.extraMonthly || 0)
+          : undefined,
         homeValue: propertyValue,
         bakeAmount,
+        startDate: START,
       }),
-    [
-      mortgageValue,
-      propertyValue,
-      personalTotal,
-      bakeAmount,
-      refinanceMortgage?.interestRate,
-      refinancePersonal?.interestRate,
-    ],
+    [mortgageValue, propertyValue, personalTotal, bakeAmount, refinanceMortgage, refinancePersonal],
   );
   const total = debtLoans.reduce((sum, x) => sum + x.balance, 0);
   // Månadskostnaden gäller samma lån som skulden ovan. Leasing räknas inte in
@@ -649,7 +594,7 @@ export default function Page() {
     setLang(next);
     localStorage.setItem("debtkill-lang", next);
   };
-  const updateLoan = (id: string, key: keyof Loan, value: number) =>
+  const updateLoan = <K extends keyof Loan>(id: string, key: K, value: Loan[K]) =>
     setLoans((current) =>
       current.map((x) => (x.id === id ? { ...x, [key]: value } : x)),
     );
@@ -756,9 +701,7 @@ export default function Page() {
               loans={loans}
               setLoans={setLoans}
               t={t}
-              result={result}
               updateLoan={updateLoan}
-              total={total}
               monthlyTotal={monthlyTotal}
               addDebt={addDebt}
               loanKinds={loanKinds}
@@ -1441,14 +1384,22 @@ function BestView({
                     <MoveButton
                       disabled={i === 0}
                       label={sv ? `Flytta ${loan.name} uppåt` : `Move ${loan.name} up`}
-                      onClick={() => setLoans((c) => swap(c, i, i - 1))}
+                      onClick={() =>
+                        setLoans((all) =>
+                          moveLoan(all, loan.id, loans[i - 1].id),
+                        )
+                      }
                     >
                       ↑
                     </MoveButton>
                     <MoveButton
                       disabled={i === loans.length - 1}
                       label={sv ? `Flytta ${loan.name} nedåt` : `Move ${loan.name} down`}
-                      onClick={() => setLoans((c) => swap(c, i, i + 1))}
+                      onClick={() =>
+                        setLoans((all) =>
+                          moveLoan(all, loan.id, loans[i + 1].id),
+                        )
+                      }
                     >
                       ↓
                     </MoveButton>
@@ -1463,10 +1414,18 @@ function BestView({
   );
 }
 
-/** Byter plats på två lån i listan. */
-function swap(loans: Loan[], from: number, to: number) {
-  if (to < 0 || to >= loans.length) return loans;
-  const next = [...loans];
+/**
+ * Flyttar ett lån ett steg i den fulla listan, identifierat med id.
+ *
+ * Vyn visar bara skuldlånen (leasing räknas inte med i planen), så ett index
+ * i den listan pekar på fel rad i den fulla. Med ett leasingobjekt inlagt
+ * flyttade knapparna antingen fel lån eller ingenting.
+ */
+function moveLoan(all: Loan[], id: string, neighbourId: string) {
+  const from = all.findIndex((l) => l.id === id);
+  const to = all.findIndex((l) => l.id === neighbourId);
+  if (from < 0 || to < 0) return all;
+  const next = [...all];
   [next[from], next[to]] = [next[to], next[from]];
   return next;
 }
@@ -1782,34 +1741,66 @@ function Bar({
   );
 }
 
-function TodayV5(p: any) {
-  const lang: Lang = p.lang;
-  const {
-      loans,
-      setLoans,
-      t,
-      result,
-      updateLoan,
-      monthlyTotal,
-      addDebt,
-      loanKinds,
-      setLoanKinds,
-      amortKinds,
-      setAmortKinds,
-      expanded,
-      setExpanded,
-      fearRate,
-      setFearRate,
-      income,
-      setIncome,
-      leasingTerms,
-      setLeasingTerms,
-      timeBoxes,
-      setTimeBoxes,
-      plan,
-      avalanchePlan,
-    } = p,
-    sv = lang === "sv";
+/**
+ * Propsen var tidigare `p: any`. Det var inte en förenkling utan en
+ * avstängd kontroll: två av felen i den här filen — ett index i fel lista
+ * och en sträng skickad till en funktion som väntar ett tal — gick igenom
+ * tsc utan invändning just därför.
+ */
+interface TodayProps {
+  lang: Lang;
+  t: Copy;
+  loans: Loan[];
+  setLoans: (fn: (current: Loan[]) => Loan[]) => void;
+  updateLoan: <K extends keyof Loan>(id: string, key: K, value: Loan[K]) => void;
+  monthlyTotal: number;
+  addDebt: () => void;
+  loanKinds: Record<string, LoanKind>;
+  setLoanKinds: (fn: (c: Record<string, LoanKind>) => Record<string, LoanKind>) => void;
+  amortKinds: Record<string, AmortKind>;
+  setAmortKinds: (fn: (c: Record<string, AmortKind>) => Record<string, AmortKind>) => void;
+  expanded: Record<string, boolean>;
+  setExpanded: (fn: (c: Record<string, boolean>) => Record<string, boolean>) => void;
+  fearRate: number;
+  setFearRate: (n: number) => void;
+  income: number;
+  setIncome: (n: number) => void;
+  leasingTerms: Record<string, LeasingTerms>;
+  setLeasingTerms: (
+    fn: (c: Record<string, LeasingTerms>) => Record<string, LeasingTerms>,
+  ) => void;
+  timeBoxes: Record<string, TimeBox>;
+  setTimeBoxes: (fn: (c: Record<string, TimeBox>) => Record<string, TimeBox>) => void;
+  plan: PlanResult;
+  avalanchePlan: PlanResult;
+}
+
+function TodayV5({
+  lang,
+  t,
+  loans,
+  setLoans,
+  updateLoan,
+  monthlyTotal,
+  addDebt,
+  loanKinds,
+  setLoanKinds,
+  amortKinds,
+  setAmortKinds,
+  expanded,
+  setExpanded,
+  fearRate,
+  setFearRate,
+  income,
+  setIncome,
+  leasingTerms,
+  setLeasingTerms,
+  timeBoxes,
+  setTimeBoxes,
+  plan,
+  avalanchePlan,
+}: TodayProps) {
+  const sv = lang === "sv";
   const debtPlanLoans = useMemo<Loan[]>(
     () =>
       loans.filter((loan: Loan) => loanKinds[loan.id] !== "leasing"),
@@ -1844,6 +1835,11 @@ function TodayV5(p: any) {
                 paymentStyle: source.paymentStyle,
                 extraMonthly: source.extraMonthly,
                 extraMonthlyEnabled: source.extraMonthlyEnabled,
+                // Måste följa med, annars är det inte samma plan som jämförs
+                // och räntechocken redovisas som noll.
+                timeBoxMonths: timeBoxes[source.id]?.enabled
+                  ? timeBoxes[source.id].months
+                  : undefined,
               };
             }),
             strategy: "custom",
@@ -1852,7 +1848,7 @@ function TodayV5(p: any) {
             rollover: true,
           })
         : null,
-    [debtPlanLoans, mortgage, fearRate, plan],
+    [debtPlanLoans, mortgage, fearRate, plan, timeBoxes],
   );
   const dragSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -1876,8 +1872,8 @@ function TodayV5(p: any) {
           : kind === "leasing"
             ? "fixed_cost"
             : "annuity";
-    setLoanKinds((x: any) => ({ ...x, [loan.id]: kind }));
-    setAmortKinds((x: any) => ({ ...x, [loan.id]: a }));
+    setLoanKinds((x) => ({ ...x, [loan.id]: kind }));
+    setAmortKinds((x) => ({ ...x, [loan.id]: a }));
     if (kind === "leasing") {
       setLeasingTerms((current: Record<string, LeasingTerms>) => ({
         ...current,
@@ -1903,7 +1899,7 @@ function TodayV5(p: any) {
     );
   };
   const changeAmort = (loan: Loan, a: AmortKind) => {
-    setAmortKinds((x: any) => ({ ...x, [loan.id]: a }));
+    setAmortKinds((x) => ({ ...x, [loan.id]: a }));
     updateLoan(
       loan.id,
       "paymentStyle",
@@ -1950,14 +1946,14 @@ function TodayV5(p: any) {
       other: {},
     };
     const meta = LOAN_KINDS[kind];
-    setLoanKinds((x: any) => ({ ...x, [id]: kind }));
+    setLoanKinds((x) => ({ ...x, [id]: kind }));
     if (kind === "leasing") {
       setLeasingTerms((current: Record<string, LeasingTerms>) => ({
         ...current,
         [id]: { ...DEFAULT_LEASING_TERMS },
       }));
     }
-    setAmortKinds((x: any) => ({
+    setAmortKinds((x) => ({
       ...x,
       [id]:
         kind === "mortgage"
@@ -2306,11 +2302,6 @@ function TodayV5(p: any) {
                                   <option value="annuity">
                                     {sv ? "Annuitet" : "Annuity"}
                                   </option>
-                                  <option value="interest_free">
-                                    {sv
-                                      ? "Räntefritt / Amorteringsfritt"
-                                      : "Interest-free / Payment holiday"}
-                                  </option>
                                 </Select>
                                 <p className="mt-2 text-[12px] text-white/65">
                                   {sv
@@ -2585,9 +2576,14 @@ function RefinanceV5({
   const color =
     bake.ltvAfter < 0.7 ? "#22C55E" : bake.ltvAfter <= 0.85 ? "#EAB308" : "#EF4444";
   const sliderMax = Math.max(1, personalTotal);
-  const monthsEarlier = scenario.feasible
-    ? Math.max(0, bake.todayMonths - scenario.months)
-    : 0;
+  // Bara meningsfullt när dagens upplägg faktiskt går ihop. Annars är
+  // todayMonths taket på 600, och "26 år tidigare" står bredvid ett
+  // dagensdatum som visas som "—".
+  const monthsEarlier =
+    scenario.feasible && bake.todayFeasible
+      ? Math.max(0, bake.todayMonths - scenario.months)
+      : 0;
+  const saved = scenario.interestSavedNet;
   return (
     <main className="mx-auto max-w-[1120px] px-4 py-6 pb-40 md:px-8 md:py-10 md:pb-16">
       <Title
@@ -2766,7 +2762,7 @@ function RefinanceV5({
 
           <div className="card p-5">
             <span className="text-sm text-white/65">
-              {scenario.interestSavedNet >= 0
+              {saved === null || saved >= 0
                 ? sv
                   ? "Sparad r\u00e4nta efter avdrag"
                   : "Interest saved after deduction"
@@ -2775,18 +2771,22 @@ function RefinanceV5({
                   : "Extra interest after deduction"}
             </span>
             <div
-              className={`mt-2 text-3xl font-semibold ${scenario.interestSavedNet >= 0 ? "text-emerald-300" : "text-orange-300"}`}
+              className={`mt-2 text-3xl font-semibold ${saved === null ? "text-white/40" : saved >= 0 ? "text-emerald-300" : "text-orange-300"}`}
             >
-              {scenario.feasible ? (
-                <CountUp value={Math.abs(scenario.interestSavedNet)} lang={lang} />
-              ) : (
+              {saved === null ? (
                 "\u2014"
+              ) : (
+                <CountUp value={Math.abs(saved)} lang={lang} />
               )}
             </div>
             <p className="mt-3 text-xs leading-5 text-white/55">
-              {sv
-                ? "Bol\u00e5ner\u00e4nta \u00e4r avdragsgill, blancor\u00e4nta i praktiken inte. Siffran \u00e4r r\u00e4knad per l\u00e5netyp."
-                : "Mortgage interest is deductible, unsecured interest in practice is not. Calculated per loan type."}
+              {saved === null
+                ? sv
+                  ? "Går inte att jämföra: någon av betalningarna täcker inte räntan, så skulden växer i stället för att minska."
+                  : "Cannot be compared: one of the payments does not cover the interest, so the debt grows instead of shrinking."
+                : sv
+                  ? "Bolåneränta är avdragsgill, blancoränta i praktiken inte. Siffran är räknad per lånetyp."
+                  : "Mortgage interest is deductible, unsecured interest in practice is not. Calculated per loan type."}
             </p>
           </div>
         </div>
