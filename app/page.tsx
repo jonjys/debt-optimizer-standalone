@@ -1468,12 +1468,14 @@ function Refinance({
   personalTotal,
   refinanceDate,
 }: any) {
+  const [scenario, setScenario] = useState<"samePayoff" | "minimumBolån">("samePayoff");
   const color =
     bake.ltvAfter < 0.7
       ? "#22C55E"
       : bake.ltvAfter <= 0.85
         ? "#EAB308"
         : "#EF4444";
+  const currentScenario = bake.scenarios[scenario];
   return (
     <main className="mx-auto max-w-[1120px] px-5 py-10 pb-28 md:px-10">
       <Title
@@ -1547,30 +1549,50 @@ function Refinance({
         </div>
         <div className="space-y-4">
           <div className="card p-6">
-            <span className="text-sm text-white/65">{t.newMonthly}</span>
+            <div className="mb-4 flex gap-2">
+              {["samePayoff", "minimumBolån"].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setScenario(s as typeof scenario)}
+                  className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium transition-all ${
+                    scenario === s
+                      ? "bg-white/20 text-white"
+                      : "bg-white/5 text-white/65 hover:bg-white/10"
+                  }`}
+                >
+                  {s === "samePayoff" ? "Samma kostnad" : "Minimalt bolåne"}
+                </button>
+              ))}
+            </div>
+            <span className="text-sm text-white/65">Månadskostnad</span>
             <div className="mt-3 text-4xl font-semibold">
-              {money(bake.monthAfter, lang)}
+              {money(currentScenario.monthlyPayment, lang)}
             </div>
-            <div
-              className={`mt-2 text-xs ${bake.monthDelta <= 0 ? "text-emerald-400" : "text-orange-400"}`}
-            >
-              {bake.monthDelta <= 0 ? "−" : "+"}
-              {money(Math.abs(bake.monthDelta), lang)} / month
-            </div>
+            {currentScenario.monthlyDelta !== 0 && (
+              <div
+                className={`mt-2 text-xs ${currentScenario.monthlyDelta <= 0 ? "text-emerald-400" : "text-orange-400"}`}
+              >
+                {currentScenario.monthlyDelta <= 0 ? "−" : "+"}
+                {money(Math.abs(currentScenario.monthlyDelta), lang)} / månad
+              </div>
+            )}
           </div>
           <div className="card p-6">
-            <span className="text-sm text-white/65">{t.newDate}</span>
+            <span className="text-sm text-white/65">Skuldfritt</span>
             <div className="mt-3 text-4xl font-semibold">
-              {month(refinanceDate, lang)}
+              {currentScenario.expectedDebtFreeDate === "-" ? "-" : month(currentScenario.expectedDebtFreeDate, lang)}
             </div>
+            <p className="mt-3 text-xs text-white/55">
+              {currentScenario.expectedMonths} månader
+            </p>
           </div>
           <div className="card p-6">
-            <span className="text-sm text-white/65">{t.saved}</span>
+            <span className="text-sm text-white/65">Räntesparad</span>
             <div className="mt-3 text-4xl font-semibold text-emerald-300">
-              <CountUp value={Math.max(0, bake.interestSavedNet)} lang={lang} />
+              <CountUp value={Math.max(0, currentScenario.interestSavedNet)} lang={lang} />
             </div>
             <p className="mt-3 text-xs leading-5 text-white/55">
-              {bake.summaryLine}
+              {currentScenario.description}
             </p>
           </div>
         </div>

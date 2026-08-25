@@ -45,6 +45,18 @@ export interface BakeInInput {
   personalMonths?: number;
 }
 
+export interface BakeInScenario {
+  name: string;
+  nameEn: string;
+  monthlyPayment: number;
+  monthlyDelta: number;
+  expectedMonths: number;
+  expectedDebtFreeDate: string;
+  interestSavedGross: number;
+  interestSavedNet: number;
+  description: string;
+}
+
 export interface BakeInResult {
   bake: number;
   personalLeft: number;
@@ -72,6 +84,12 @@ export interface BakeInResult {
   warningLtv: boolean;
   warningText: string | null;
   summaryLine: string;
+
+  // Phase A: Two scenarios
+  scenarios: {
+    samePayoff: BakeInScenario;
+    minimumBolån: BakeInScenario;
+  };
 }
 
 /**
@@ -135,6 +153,26 @@ function mortgageInterestEstimate(
   const endBal = Math.max(0, principal - annualAmort * years);
   const avgBal = (principal + endBal) / 2;
   return avgBal * annualRate * years;
+}
+
+function estimateLoanPayoff(
+  balance: number,
+  annualRate: number,
+  monthlyPayment: number,
+  maxMonths: number = 600
+): { months: number; totalInterest: number } {
+  if (balance <= 0 || monthlyPayment <= 0) return { months: 0, totalInterest: 0 };
+  const monthlyRate = annualRate / 12;
+  let remaining = balance;
+  let interest = 0;
+  let month = 0;
+  while (remaining > 0 && month < maxMonths) {
+    const monthInt = remaining * monthlyRate;
+    remaining -= monthlyPayment - monthInt;
+    interest += monthInt;
+    if (remaining > 0) month++;
+  }
+  return { months: month + 1, totalInterest: interest };
 }
 
 export function calculateBakeIn(input: BakeInInput): BakeInResult {
@@ -206,6 +244,50 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
           ? `Baka in ${fmt(bake)} kr → kostar dig ca ${fmt(Math.abs(interestSavedGross))} kr mer i ränta (${fmt(Math.abs(interestSavedNet))} kr efter ränteavdrag). Månad ${fmt(monthBefore)} → ${fmt(monthAfter)} kr.`
           : `Baka in ${fmt(bake)} kr → varken sparar eller kostar något i ränta. Månad ${fmt(monthBefore)} → ${fmt(monthAfter)} kr.`;
 
+  // Phase A: Beräkna två scenarier
+  const samePayoffMonthly = monthBefore;
+  const samePayoffBolån = estimateLoanPayoff(
+    newMortgage,
+    input.mortgageRate,
+    samePayoffMonthly - personalMonthAfter,
+    600
+  );
+  const samePayoffPersonal = personalLeft > 0
+    ? estimateLoanPayoff(personalLeft, input.personalRate, personalMonthAfter, 600)
+    : { months: 0, totalInterest: 0 };
+  const samePayoffTotalMonths = Math.max(samePayoffBolån.months, samePayoffPersonal.months);
+  const samePayoffTotalInt = samePayoffBolån.totalInterest + samePayoffPersonal.totalInterest;
+  const samePayoffSavedGross = totalIntBefore - samePayoffTotalInt;
+  const samePayoffSavedNet =
+    netBefore -
+    (securedAfterTax(samePayoffBolån.totalInterest, years) + unsecuredAfterTax(samePayoffPersonal.totalInterest));
+
+  const minimumBolånPayment = amortKrAfter + interestMortMonthAfter;
+  const minimumPersonalMonthly = Math.max(0, monthBefore - minimumBolånPayment);
+  const minimumBolån = estimateLoanPayoff(
+    newMortgage,
+    input.mortgageRate,
+    minimumBolånPayment,
+    600
+  );
+  const minimumPersonal = personalLeft > 0
+    ? estimateLoanPayoff(personalLeft, input.personalRate, minimumPersonalMonthly, 600)
+    : { months: 0, totalInterest: 0 };
+  const minimumTotalMonths = Math.max(minimumBolån.months, minimumPersonal.months);
+  const minimumTotalInt = minimumBolån.totalInterest + minimumPersonal.totalInterest;
+  const minimumSavedGross = totalIntBefore - minimumTotalInt;
+  const minimumSavedNet =
+    netBefore -
+    (securedAfterTax(minimumBolån.totalInterest, years) + unsecuredAfterTax(minimumPersonal.totalInterest));
+
+  const addMonthsHelper = (ym: string, months: number) => {
+    const [y, m] = ym.split("-").map(Number);
+    const d = new Date(y, m - 1 + months, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  };
+
+  const baseDate = new Date().toISOString().split("T")[0].slice(0, 7) as string;
+
   return {
     bake,
     personalLeft,
@@ -233,5 +315,29 @@ export function calculateBakeIn(input: BakeInInput): BakeInResult {
     warningLtv,
     warningText,
     summaryLine,
+    scenarios: {
+      samePayoff: {
+        name: "Samma månadskostnad",
+        nameEn: "Same Monthly Payment",
+        monthlyPayment: samePayoffMonthly,
+        monthlyDelta: 0,
+        expectedMonths: samePayoffTotalMonths,
+        expectedDebtFreeDate: addMonthsHelper(baseDate, samePayoffTotalMonths),
+        interestSavedGross: samePayoffSavedGross,
+        interestSavedNet: samePayoffSavedNet,
+        description: `Betala samma som idag (${fmt(samePayoffMonthly)} kr/mån), men slut tidigare`,
+      },
+      minimumBolån: {
+        name: "Minimalt bolånebetalt",
+        nameEn: "Minimum Mortgage Payment",
+        monthlyPayment: minimumBolånPayment + minimumPersonalMonthly,
+        monthlyDelta: (minimumBolånPayment + minimumPersonalMonthly) - monthBefore,
+        expectedMonths: minimumTotalMonths,
+        expectedDebtFreeDate: addMonthsHelper(baseDate, minimumTotalMonths),
+        interestSavedGross: minimumSavedGross,
+        interestSavedNet: minimumSavedNet,
+        description: `Betala bara minimalt på bolånet (${fmt(minimumBolånPayment)} kr/mån + ränta), slut på samma tid eller senare`,
+      },
+    },
   };
 }
